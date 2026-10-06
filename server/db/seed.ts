@@ -3,7 +3,7 @@ import { db } from './database.ts';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { PRIVATE_VIDEOS_DIR, PRIVATE_THUMBNAILS_DIR } from '../config.ts';
+import { PRIVATE_VIDEOS_DIR, PRIVATE_THUMBNAILS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
 
 export async function seedDatabase(): Promise<void> {
   const existingUsers = db.query('SELECT COUNT(*) as count FROM users');
@@ -23,13 +23,12 @@ export async function seedDatabase(): Promise<void> {
     const res = db.run(
       `INSERT INTO users (username, password_hash, role, display_name, is_active, created_at, updated_at)
        VALUES (?, ?, 'SuperAdmin', ?, 1, ?, ?)`,
-      ['superadmin', superadminHash, 'سامان کیانی (مدیر ارشد کل - استودیو ۲۰نگار)', now, now]
+      ['superadmin', superadminHash, 'سامان کیانی (مدیرکل - دسترسی همه چی)', now, now]
     );
     superadminId = res.lastInsertRowid;
   } else {
     superadminId = superadminUser.id;
-    // Keep display name updated to 20Negar
-    db.run("UPDATE users SET display_name = 'سامان کیانی (مدیر ارشد کل - استودیو ۲۰نگار)' WHERE username = 'superadmin'");
+    db.run("UPDATE users SET display_name = 'سامان کیانی (مدیرکل - دسترسی همه چی)' WHERE username = 'superadmin'");
   }
 
   if (count <= 1) {
@@ -42,21 +41,21 @@ export async function seedDatabase(): Promise<void> {
     const resAdmin = db.run(
       `INSERT INTO users (username, password_hash, role, display_name, is_active, created_at, updated_at)
        VALUES (?, ?, 'Admin', ?, 1, ?, ?)`,
-      ['admin1', adminHash, 'آرش زمانی (مدیر تولید استودیو ۲۰نگار)', now, now]
+      ['admin1', adminHash, 'آرش زمانی (ادمین)', now, now]
     );
     adminId = resAdmin.lastInsertRowid;
 
     const resEditor = db.run(
       `INSERT INTO users (username, password_hash, role, display_name, is_active, created_at, updated_at)
        VALUES (?, ?, 'Editor', ?, 1, ?, ?)`,
-      ['editor1', editorHash, 'النا رستمی (تدوین‌گر استودیو ۲۰نگار)', now, now]
+      ['editor1', editorHash, 'النا رستمی (تدوین‌گر)', now, now]
     );
     editorId = resEditor.lastInsertRowid;
 
     const resSupervisor = db.run(
       `INSERT INTO users (username, password_hash, role, display_name, is_active, created_at, updated_at)
        VALUES (?, ?, 'Supervisor', ?, 1, ?, ?)`,
-      ['supervisor1', supervisorHash, 'مهدی کمالی (ناظر کیفی استودیو ۲۰نگار)', now, now]
+      ['supervisor1', supervisorHash, 'مهدی کمالی (ناظر کیفی)', now, now]
     );
     supervisorId = resSupervisor.lastInsertRowid;
 
@@ -67,33 +66,41 @@ export async function seedDatabase(): Promise<void> {
     const supervisor = db.queryOne<{ id: number }>('SELECT id FROM users WHERE username = ?', ['supervisor1']);
     if (admin) {
       adminId = admin.id;
-      db.run("UPDATE users SET display_name = 'آرش زمانی (مدیر تولید استودیو ۲۰نگار)' WHERE username = 'admin1'");
+      db.run("UPDATE users SET display_name = 'آرش زمانی (ادمین)' WHERE username = 'admin1'");
     }
     if (editor) {
       editorId = editor.id;
-      db.run("UPDATE users SET display_name = 'النا رستمی (تدوین‌گر استودیو ۲۰نگار)' WHERE username = 'editor1'");
+      db.run("UPDATE users SET display_name = 'النا رستمی (تدوین‌گر)' WHERE username = 'editor1'");
     }
     if (supervisor) {
       supervisorId = supervisor.id;
-      db.run("UPDATE users SET display_name = 'مهدی کمالی (ناظر کیفی استودیو ۲۰نگار)' WHERE username = 'supervisor1'");
+      db.run("UPDATE users SET display_name = 'مهدی کمالی (ناظر کیفی)' WHERE username = 'supervisor1'");
     }
   }
 
-  // Check if videos exist
+  // Ensure directories exist
+  for (const d of [PRIVATE_VIDEOS_DIR, PRIVATE_THUMBNAILS_DIR, PRIVATE_HLS_DIR]) {
+    if (!fs.existsSync(d)) {
+      fs.mkdirSync(d, { recursive: true });
+    }
+  }
+
+  // Check if videos exist in database and on physical disk
+  const sample1Exists = fs.existsSync(path.join(PRIVATE_VIDEOS_DIR, 'sample-neon-cyberpunk.mp4'));
   const existingVideos = db.query('SELECT COUNT(*) as count FROM videos');
   const videoCount = existingVideos.length > 0 ? (existingVideos[0].count as number) : 0;
 
-  if (videoCount === 0) {
-    console.log('[Seed] Generating demo sample videos with FFmpeg...');
+  if (videoCount === 0 || !sample1Exists) {
+    console.log('[Seed] Generating demo sample videos and HLS streams with FFmpeg...');
     try {
-      await generateSeedVideoFiles(adminId, editorId, supervisorId);
+      await generateSeedVideoFiles(adminId, editorId, supervisorId, videoCount === 0);
     } catch (err) {
       console.warn('[Seed] Notice: Could not generate FFmpeg demo seed videos automatically:', err);
     }
   }
 }
 
-async function generateSeedVideoFiles(adminId: number, editorId: number, supervisorId: number) {
+async function generateSeedVideoFiles(adminId: number, editorId: number, supervisorId: number, shouldInsertDb: boolean) {
   const sample1File = 'sample-neon-cyberpunk.mp4';
   const sample2File = 'sample-nature-documentary.mp4';
   const sample3File = 'sample-audio-retake.mp4';
@@ -110,8 +117,11 @@ async function generateSeedVideoFiles(adminId: number, editorId: number, supervi
   const t2Path = path.join(PRIVATE_THUMBNAILS_DIR, thumb2File);
   const t3Path = path.join(PRIVATE_THUMBNAILS_DIR, thumb3File);
 
-  const createClip = (color: string, text: string, outFile: string, thumbFile: string, dur = 5) => {
+  const createClip = (color: string, text: string, outFile: string, thumbFile: string, dur = 6) => {
     return new Promise<void>((resolve) => {
+      if (fs.existsSync(outFile) && fs.existsSync(thumbFile)) {
+        return resolve();
+      }
       const child = spawn(
         'ffmpeg',
         [
@@ -150,13 +160,48 @@ async function generateSeedVideoFiles(adminId: number, editorId: number, supervi
     createClip('darkred', 'REJECTED - NEEDS AUDIO FIX', s3Path, t3Path, 6)
   ]);
 
+  // Generate HLS streams for each demo video
+  const createHls = (videoNum: number, mp4Path: string) => {
+    return new Promise<void>((resolve) => {
+      const hlsDir = path.join(PRIVATE_HLS_DIR, `video_${videoNum}`);
+      if (!fs.existsSync(hlsDir)) fs.mkdirSync(hlsDir, { recursive: true });
+      const masterPath = path.join(hlsDir, 'master.m3u8');
+      const segmentPattern = path.join(hlsDir, 'segment_%03d.ts');
+
+      const child = spawn(
+        'ffmpeg',
+        [
+          '-y',
+          '-i', mp4Path,
+          '-c:v', 'copy',
+          '-c:a', 'copy',
+          '-hls_time', '2',
+          '-hls_playlist_type', 'vod',
+          '-hls_segment_filename', segmentPattern,
+          masterPath
+        ],
+        { stdio: 'ignore' }
+      );
+      child.on('close', () => resolve());
+      child.on('error', () => resolve());
+    });
+  };
+
+  await Promise.all([
+    createHls(1, s1Path),
+    createHls(2, s2Path),
+    createHls(3, s3Path),
+  ]);
+
+  if (!shouldInsertDb) return;
+
   const now = new Date();
   const past2d = new Date(now.getTime() - 2 * 24 * 3600 * 1000).toISOString();
   const past1d = new Date(now.getTime() - 1 * 24 * 3600 * 1000).toISOString();
   const nowIso = now.toISOString();
 
   // 1. Approved Video
-  const stat1 = fs.existsSync(s1Path) ? fs.statSync(s1Path).size : 1240000;
+  const stat1 = fs.existsSync(s1Path) ? fs.statSync(s1Path).size : 70898;
   const res1 = db.run(
     `INSERT INTO videos (
       title, original_filename, original_path, thumbnail_path, editor_id, supervisor_id,
@@ -200,7 +245,7 @@ async function generateSeedVideoFiles(adminId: number, editorId: number, supervi
   );
 
   // 2. Pending Review Video
-  const stat2 = fs.existsSync(s2Path) ? fs.statSync(s2Path).size : 980000;
+  const stat2 = fs.existsSync(s2Path) ? fs.statSync(s2Path).size : 70897;
   const res2 = db.run(
     `INSERT INTO videos (
       title, original_filename, original_path, thumbnail_path, editor_id, supervisor_id,
@@ -232,7 +277,7 @@ async function generateSeedVideoFiles(adminId: number, editorId: number, supervi
   );
 
   // 3. Rejected Video
-  const stat3 = fs.existsSync(s3Path) ? fs.statSync(s3Path).size : 850000;
+  const stat3 = fs.existsSync(s3Path) ? fs.statSync(s3Path).size : 70899;
   const rejectionText = 'صدای گوینده در ابتدای ویدیو کمی نامفهوم است و ترنزیشن صحنه پایانی نیاز به اصلاح و نرم‌تر شدن دارد.';
   const res3 = db.run(
     `INSERT INTO videos (
@@ -290,5 +335,5 @@ async function generateSeedVideoFiles(adminId: number, editorId: number, supervi
     [editorId, past1d]
   );
 
-  console.log('[Seed] Persian 20Negar demo data seeded successfully.');
+  console.log('[Seed] Persian 20Negar demo data and HLS streams seeded successfully.');
 }

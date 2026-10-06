@@ -48,8 +48,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   if (role === 'SuperAdmin') {
     navItems = [
-      { id: 'superadmin', label: 'پنل مدیریت کل (SuperAdmin)', icon: <Crown className="w-4 h-4 text-amber-400" /> },
-      { id: 'dashboard', label: 'پیشخوان تایید شده‌ها (Admin)', icon: <LayoutDashboard className="w-4 h-4" /> },
+      { id: 'superadmin', label: 'پنل مدیرکل (دسترسی همه چی)', icon: <Crown className="w-4 h-4 text-amber-400" /> },
+      { id: 'dashboard', label: 'پیشخوان ادمین (تایید شده‌ها)', icon: <LayoutDashboard className="w-4 h-4" /> },
       { id: 'all-videos', label: 'تمام پروژه‌ها و ویدیوها', icon: <Film className="w-4 h-4" /> },
       { id: 'editors', label: 'لیست تدوین‌گران', icon: <Users className="w-4 h-4" /> },
       { id: 'supervisors', label: 'لیست ناظران کیفی', icon: <Shield className="w-4 h-4" /> },
@@ -103,10 +103,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const getRoleLabel = (r?: string) => {
     switch (r) {
-      case 'SuperAdmin': return 'سوپریوزر ارشد کل';
-      case 'Admin': return 'مدیریت ارشد';
-      case 'Supervisor': return 'سرپرست و ناظر کیفی';
-      case 'Editor': return 'تدوین‌گر ویدیو';
+      case 'SuperAdmin': return 'مدیرکل (دسترسی همه چی)';
+      case 'Editor': return 'تدوین‌گر';
+      case 'Supervisor': return 'ناظر کیفی';
+      case 'Admin': return 'ادمین';
       default: return r;
     }
   };

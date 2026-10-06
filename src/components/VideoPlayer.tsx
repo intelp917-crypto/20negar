@@ -12,9 +12,12 @@ import {
   Check,
   Zap,
   Sliders,
+  Loader2,
+  AlertCircle,
+  RotateCcw as ReloadIcon,
 } from 'lucide-react';
 import Hls from 'hls.js';
-import { api } from '../api/client.ts';
+import { api, getStoredToken } from '../api/client.ts';
 import { VideoQuality } from '../types/index.ts';
 
 interface VideoPlayerProps {
@@ -30,13 +33,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   title,
   qualities = [],
   posterUrl,
-  autoPlay = false,
+  autoPlay = true,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [isBuffering, setIsBuffering] = useState<boolean>(true);
+  const [hasError, setHasError] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
   const [volume, setVolume] = useState<number>(1);
@@ -66,9 +73,31 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const fallbackToDirectMp4 = useCallback((qualityTarget: string = 'Original') => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    const mp4Url = api.getStreamUrl(videoId, qualityTarget);
+    if (video.src !== mp4Url) {
+      video.src = mp4Url;
+      video.load();
+      video.play().catch(() => {});
+    }
+    setHasError(false);
+  }, [videoId]);
+
   const setupSource = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+
+    setHasError(false);
+    setErrorMessage(null);
+    setIsBuffering(true);
 
     const savedCurrentTime = video.currentTime;
     const wasPlaying = !video.paused;
@@ -85,7 +114,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           enableWorker: true,
           lowLatencyMode: true,
           backBufferLength: 90,
-          capLevelToPlayerSize: false,
+          xhrSetup: (xhr) => {
+            const token = getStoredToken();
+            if (token) {
+              xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            }
+          },
         });
         hlsRef.current = hls;
         hls.loadSource(hlsUrl);
@@ -93,13 +127,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           hls.currentLevel = -1; // Auto adaptive bitrate mode based on network speed
+          setIsBuffering(false);
           if (savedCurrentTime > 0) video.currentTime = savedCurrentTime;
           if (wasPlaying || autoPlay) {
             video.play().catch(() => {});
           }
         });
 
-        // Listen for adaptive level switches to show user what auto picked
         hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
           const level = hls.levels[data.level];
           if (level) {
@@ -109,12 +143,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data.fatal) {
-            hls.destroy();
-            hlsRef.current = null;
-            video.src = api.getStreamUrl(videoId, 'Original');
-            video.load();
-            if (savedCurrentTime > 0) video.currentTime = savedCurrentTime;
-            if (wasPlaying) video.play().catch(() => {});
+            console.warn('[Hls] Fatal error encountered, smoothly falling back to direct MP4 stream...');
+            fallbackToDirectMp4('Original');
           }
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -122,18 +152,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         if (savedCurrentTime > 0) video.currentTime = savedCurrentTime;
         if (wasPlaying || autoPlay) video.play().catch(() => {});
       } else {
-        video.src = api.getStreamUrl(videoId, 'Original');
-        if (savedCurrentTime > 0) video.currentTime = savedCurrentTime;
-        if (wasPlaying || autoPlay) video.play().catch(() => {});
+        fallbackToDirectMp4('Original');
       }
     } else {
       // Manual Quality Selection
-      video.src = api.getStreamUrl(videoId, selectedQuality);
-      video.load();
-      if (savedCurrentTime > 0) video.currentTime = savedCurrentTime;
-      if (wasPlaying || autoPlay) video.play().catch(() => {});
+      fallbackToDirectMp4(selectedQuality);
     }
-  }, [videoId, selectedQuality, autoPlay]);
+  }, [videoId, selectedQuality, autoPlay, fallbackToDirectMp4]);
 
   useEffect(() => {
     setupSource();
@@ -144,6 +169,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }
     };
   }, [setupSource]);
+
+  const handleVideoError = () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    console.warn('[VideoPlayer] Video element reported error. Falling back to direct stream...');
+    // If we haven't tried direct MP4 yet, try it now
+    const directUrl = api.getStreamUrl(videoId, 'Original');
+    if (video.src !== directUrl) {
+      fallbackToDirectMp4('Original');
+    } else {
+      setHasError(true);
+      setErrorMessage('فایل ویدیو موقتا در دسترس نیست یا در حال پردازش اولیه است.');
+      setIsBuffering(false);
+    }
+  };
 
   const handleMouseMove = () => {
     setControlsVisible(true);
@@ -291,25 +332,59 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       ref={containerRef}
       onMouseMove={handleMouseMove}
       onMouseLeave={() => isPlaying && !showQualityMenu && !showSpeedMenu && setControlsVisible(false)}
-      className="relative w-full aspect-video bg-black rounded-3xl overflow-hidden shadow-2xl group select-none border border-zinc-800"
+      className="relative w-full aspect-video bg-zinc-950 rounded-3xl overflow-hidden shadow-2xl group select-none border border-zinc-800 flex items-center justify-center"
       dir="ltr"
     >
       <video
         ref={videoRef}
         poster={posterUrl}
         onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
-        onPlay={() => setIsPlaying(true)}
+        onLoadedMetadata={() => {
+          if (videoRef.current) setDuration(videoRef.current.duration);
+          setIsBuffering(false);
+        }}
+        onCanPlay={() => setIsBuffering(false)}
+        onWaiting={() => setIsBuffering(true)}
+        onError={handleVideoError}
+        onPlay={() => {
+          setIsPlaying(true);
+          setIsBuffering(false);
+        }}
         onPause={() => setIsPlaying(false)}
         onClick={togglePlay}
         className="w-full h-full object-contain cursor-pointer"
         playsInline
       />
 
-      {!isPlaying && (
+      {/* Buffering Spinner */}
+      {isBuffering && !hasError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs pointer-events-none z-20">
+          <Loader2 className="w-10 h-10 text-purple-400 animate-spin mb-2" />
+          <span className="text-xs text-zinc-300 font-medium">در حال بارگذاری استریم ویدیو...</span>
+        </div>
+      )}
+
+      {/* Error Overlay */}
+      {hasError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/90 p-4 text-center z-30" dir="rtl">
+          <AlertCircle className="w-10 h-10 text-amber-400 mb-2" />
+          <h4 className="text-sm font-bold text-zinc-100">خطا در بارگذاری ویدیو</h4>
+          <p className="text-xs text-zinc-400 mt-1 max-w-sm">{errorMessage}</p>
+          <button
+            onClick={() => fallbackToDirectMp4('Original')}
+            className="mt-3 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg"
+          >
+            <ReloadIcon className="w-3.5 h-3.5" />
+            <span>تلاش مجدد برای پخش مستقیم</span>
+          </button>
+        </div>
+      )}
+
+      {/* Big Play Button Overlay when paused */}
+      {!isPlaying && !isBuffering && !hasError && (
         <div
           onClick={togglePlay}
-          className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-xs cursor-pointer transition-opacity"
+          className="absolute inset-0 flex items-center justify-center bg-black/35 backdrop-blur-xs cursor-pointer transition-opacity z-10"
         >
           <div className="w-16 h-16 md:w-20 md:h-20 rounded-3xl bg-purple-600/90 hover:bg-purple-500 text-white flex items-center justify-center shadow-2xl hover:scale-105 transition-transform">
             <Play className="w-8 h-8 md:w-10 md:h-10 ml-1 fill-white" />
@@ -319,7 +394,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       {/* Top Bar with Title & Quality Indicator */}
       <div
-        className={`absolute top-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-b from-black/85 via-black/40 to-transparent transition-opacity duration-300 pointer-events-none ${
+        className={`absolute top-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-b from-black/85 via-black/40 to-transparent transition-opacity duration-300 pointer-events-none z-20 ${
           controlsVisible ? 'opacity-100' : 'opacity-0'
         }`}
       >
@@ -338,7 +413,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       {/* Bottom Controls Bar */}
       <div
-        className={`absolute bottom-0 left-0 right-0 p-2.5 sm:p-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent transition-opacity duration-300 ${
+        className={`absolute bottom-0 left-0 right-0 p-2.5 sm:p-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent transition-opacity duration-300 z-20 ${
           controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
@@ -424,7 +499,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
           {/* Right Controls: DIRECT QUALITY BUTTON, Speed, PIP, Fullscreen */}
           <div className="flex items-center gap-1 sm:gap-2 relative">
-            {/* Direct Quality Button (Feature Request) */}
+            {/* Direct Quality Button */}
             <div className="relative">
               <button
                 onClick={() => {
@@ -442,14 +517,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 <span className="whitespace-nowrap">{getQualityButtonLabel()}</span>
               </button>
 
-              {/* Direct Quality Selection Overlay */}
+              {/* Quality Selection Menu */}
               {showQualityMenu && (
                 <div
                   className="absolute right-0 bottom-full mb-2 w-56 bg-zinc-950/95 backdrop-blur-md border border-zinc-700 rounded-2xl shadow-2xl p-2 z-50 text-xs animate-in fade-in zoom-in-95 duration-100"
                   dir="rtl"
                 >
                   <div className="px-2.5 py-1.5 text-zinc-400 font-bold text-[10px] uppercase border-b border-zinc-800 mb-1 flex items-center justify-between">
-                    <span>انتخاب کیفیت پخش آنلاین</span>
+                    <span>کیفیت پخش آنلاین</span>
                     <span className="text-[10px] text-purple-400 font-normal">HLS استریم</span>
                   </div>
 
@@ -464,9 +539,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                       <div className="flex items-center gap-2">
                         <Zap className="w-3.5 h-3.5 text-amber-400" />
                         <div>
-                          <div>خودکار (هوشمند با سرعت نت)</div>
+                          <div>خودکار (تطبیقی با سرعت نت)</div>
                           <div className="text-[10px] text-zinc-400 font-normal mt-0.5">
-                            تنظیم پویا بدون وقفه
+                            تنظیم خودکار بدون وقفه
                           </div>
                         </div>
                       </div>

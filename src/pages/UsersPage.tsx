@@ -40,13 +40,13 @@ export const UsersPage: React.FC<UsersPageProps> = ({ roleFilter }) => {
         return (
           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
             <Crown className="w-3 h-3 text-amber-400" />
-            سوپریوزر
+            مدیرکل (دسترسی همه چی)
           </span>
         );
       case 'Admin':
         return (
           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/30">
-            مدیر ارشد
+            ادمین
           </span>
         );
       case 'Supervisor':

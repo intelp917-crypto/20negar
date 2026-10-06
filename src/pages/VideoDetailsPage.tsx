@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Video, User } from '../types/index.ts';
 import { api } from '../api/client.ts';
 import { useAuth } from '../context/AuthContext.tsx';
-import { useToast } from '../context/ToastContext.tsx';
 import { VideoPlayer } from '../components/VideoPlayer.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
+import { ProcessingStatusCard } from '../components/ProcessingStatusCard.tsx';
 import { DownloadMenu } from '../components/DownloadMenu.tsx';
 import { ReviewModal } from '../components/ReviewModal.tsx';
 import { NewVersionModal } from '../components/NewVersionModal.tsx';
@@ -34,7 +34,6 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
   onBack,
 }) => {
   const { user, isSupervisor, isEditor, isAdmin, isSuperAdmin } = useAuth();
-  const toast = useToast();
   const [video, setVideo] = useState<Video | null>(null);
   const [editors, setEditors] = useState<User[]>([]);
   const [supervisors, setSupervisors] = useState<User[]>([]);
@@ -74,9 +73,9 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
     try {
       const updated = await api.assignEditor(video.id, newEditorId);
       setVideo(updated);
-      toast.success('تدوین‌گر پروژه با موفقیت تغییر کرد.');
+      alert('تدوین‌گر پروژه با موفقیت تغییر کرد.');
     } catch (err: any) {
-      toast.error(err.message || 'خطا در تخصیص تدوین‌گر.');
+      alert(err.message || 'خطا در تخصیص تدوین‌گر.');
     }
   };
 
@@ -85,9 +84,9 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
     try {
       const updated = await api.assignSupervisor(video.id, newSupervisorId);
       setVideo(updated);
-      toast.success('ناظر کیفی پروژه با موفقیت تغییر کرد.');
+      alert('ناظر کیفی پروژه با موفقیت تغییر کرد.');
     } catch (err: any) {
-      toast.error(err.message || 'خطا در تخصیص ناظر کیفی.');
+      alert(err.message || 'خطا در تخصیص سرپرست.');
     }
   };
 
@@ -161,6 +160,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
               title={video.title}
               qualities={video.qualities}
               posterUrl={video.thumbnailPath ? api.getThumbnailUrl(video.id) : undefined}
+              autoPlay={true}
             />
           </div>
 
@@ -218,13 +218,8 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
             </div>
           )}
 
-          {/* Processing Status Notice (only if actively processing) */}
-          {video.processingStatus === 'Processing' && (
-            <div className="p-4 rounded-2xl bg-purple-500/10 border border-purple-500/20 text-purple-200 flex items-center gap-3 text-xs">
-              <span className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-ping shrink-0" />
-              <span>ویدیو در حال آماده‌سازی کیفیت‌های مختلف است... به زودی تمام کیفیت‌ها برای پخش فعال خواهند شد.</span>
-            </div>
-          )}
+          {/* Processing Pipeline */}
+          <ProcessingStatusCard video={video} onReady={fetchVideo} />
 
           {/* Review History */}
           {video.reviews && video.reviews.length > 0 && (

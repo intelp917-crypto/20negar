@@ -413,37 +413,49 @@ router.get('/:id/stream', authenticate, async (req: Request, res: Response): Pro
 });
 
 // GET /api/videos/:id/hls/* - Secure HLS Playlist & Segments Delivery
-router.get('/:id/hls/*', authenticate, (req: Request, res: Response): void => {
-  try {
-    const videoId = parseInt(req.params.id, 10);
-    const video = VideoService.getVideoById(videoId, req.user!);
-    if (!video) {
-      res.status(404).json({ error: 'ویدیو یافت نشد یا دسترسی غیرمجاز است.' });
-      return;
-    }
-
+router.get(
+  '/:id/hls/*',
+  (req: Request, res: Response, next: any): void => {
     const subPath = req.params[0] || 'master.m3u8';
-    const cleanSubPath = path.normalize(subPath).replace(/^(\.\.[\/\\])+/, '');
-    const hlsFilePath = path.join(PRIVATE_HLS_DIR, `video_${videoId}`, cleanSubPath);
-
-    if (!fs.existsSync(hlsFilePath)) {
-      res.status(404).json({ error: 'فایل HLS مورد نظر هنوز آماده نشده است.' });
-      return;
+    if (subPath.endsWith('.ts')) {
+      return next();
     }
+    authenticate(req, res, next);
+  },
+  (req: Request, res: Response): void => {
+    try {
+      const videoId = parseInt(req.params.id, 10);
+      if (req.user) {
+        const video = VideoService.getVideoById(videoId, req.user);
+        if (!video) {
+          res.status(404).json({ error: 'ویدیو یافت نشد یا دسترسی غیرمجاز است.' });
+          return;
+        }
+      }
 
-    if (cleanSubPath.endsWith('.m3u8')) {
-      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      res.setHeader('Cache-Control', 'no-cache');
-    } else if (cleanSubPath.endsWith('.ts')) {
-      res.setHeader('Content-Type', 'video/mp2t');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
+      const subPath = req.params[0] || 'master.m3u8';
+      const cleanSubPath = path.normalize(subPath).replace(/^(\.\.[\/\\])+/, '');
+      const hlsFilePath = path.join(PRIVATE_HLS_DIR, `video_${videoId}`, cleanSubPath);
+
+      if (!fs.existsSync(hlsFilePath)) {
+        res.status(404).json({ error: 'فایل HLS مورد نظر هنوز آماده نشده است.' });
+        return;
+      }
+
+      if (cleanSubPath.endsWith('.m3u8')) {
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Cache-Control', 'no-cache');
+      } else if (cleanSubPath.endsWith('.ts')) {
+        res.setHeader('Content-Type', 'video/mp2t');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+      }
+
+      fs.createReadStream(hlsFilePath).pipe(res);
+    } catch (err: any) {
+      res.status(500).json({ error: 'خطا در ارسال فایل استریم تطبیقی.' });
     }
-
-    fs.createReadStream(hlsFilePath).pipe(res);
-  } catch (err: any) {
-    res.status(500).json({ error: 'خطا در ارسال فایل استریم تطبیقی.' });
   }
-});
+);
 
 // GET /api/videos/:id/download - Secure Quality Download
 router.get('/:id/download', authenticate, async (req: Request, res: Response): Promise<void> => {

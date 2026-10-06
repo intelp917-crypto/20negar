@@ -208,13 +208,13 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
         return (
           <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
             <Crown className="w-3 h-3 text-amber-400" />
-            سوپریوزر کل
+            مدیرکل (دسترسی همه چی)
           </span>
         );
-      case 'Admin':
+      case 'Editor':
         return (
-          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/30">
-            مدیر ارشد
+          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/30">
+            تدوین‌گر
           </span>
         );
       case 'Supervisor':
@@ -223,11 +223,11 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
             ناظر کیفی
           </span>
         );
-      case 'Editor':
+      case 'Admin':
       default:
         return (
-          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/30">
-            تدوین‌گر
+          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/30">
+            ادمین
           </span>
         );
     }
@@ -243,7 +243,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           </div>
           <div>
             <h1 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
-              <span>پنل مدیریت کل سیستم (SuperAdmin)</span>
+              <span>پنل مدیرکل (دسترسی همه چی)</span>
             </h1>
             <p className="text-xs sm:text-sm text-zinc-300 mt-1">
               کنترل جامع حساب‌های کاربری، رمزهای عبور، نقش‌ها، تمامی ویدیوها، بازبینی و منابع دیسک سرور.
@@ -596,10 +596,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   onChange={(e) => setNewRole(e.target.value as UserRole)}
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-purple-500"
                 >
-                  <option value="Editor">تدوین‌گر (Editor)</option>
-                  <option value="Supervisor">ناظر کیفی و سرپرست (Supervisor)</option>
-                  <option value="Admin">مدیر ارشد تولید (Admin)</option>
-                  <option value="SuperAdmin">سوپریوزر و ادمین کل (SuperAdmin)</option>
+                  <option value="SuperAdmin">مدیرکل (دسترسی همه چی)</option>
+                  <option value="Editor">تدوین‌گر</option>
+                  <option value="Supervisor">ناظر کیفی</option>
+                  <option value="Admin">ادمین</option>
                 </select>
               </div>
 
@@ -694,10 +694,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   onChange={(e) => setEditRole(e.target.value as UserRole)}
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-purple-500"
                 >
-                  <option value="Editor">تدوین‌گر (Editor)</option>
-                  <option value="Supervisor">ناظر کیفی و سرپرست (Supervisor)</option>
-                  <option value="Admin">مدیر ارشد تولید (Admin)</option>
-                  <option value="SuperAdmin">سوپریوزر و ادمین کل (SuperAdmin)</option>
+                  <option value="SuperAdmin">مدیرکل (دسترسی همه چی)</option>
+                  <option value="Editor">تدوین‌گر</option>
+                  <option value="Supervisor">ناظر کیفی</option>
+                  <option value="Admin">ادمین</option>
                 </select>
               </div>
 
