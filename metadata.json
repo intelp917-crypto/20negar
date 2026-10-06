@@ -1,0 +1,6 @@
+{
+  "name": "20Negar Studio - سیستم مدیریت گردش کار و پخش ویدیو ۲۰نگار",
+  "description": "سامانه اختصاصی استودیو ۲۰نگار برای مدیریت گردش کار ویدیو، تفکیک دسترسی پرسنل، بازبینی کیفی، استریم تطبیقی چندکیفیته و مانیتورینگ جامع.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
