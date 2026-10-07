@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 .freebuff/
+# کلید/گواهی TLS خودامضا — هرگز کامیت نشود
+data/certs/

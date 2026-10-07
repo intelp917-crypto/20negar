@@ -21,6 +21,15 @@ function resolveChunkedUpload(uploadId: string, userId: number): { tempPath: str
   if (!session || session.userId !== userId) return null;
   const src = chunkDataFile(uploadId);
   if (!fs.existsSync(src)) return null;
+
+  // اعتبارسنجی سخت‌گیرانه: همه چانک‌ها باید دریافت شده و حجم نهایی درست باشد
+  if (session.received.length !== session.totalChunks) return null;
+  for (let i = 0; i < session.totalChunks; i++) {
+    if (!session.received.includes(i)) return null;
+  }
+  const stat = fs.statSync(src);
+  if (stat.size !== session.fileSize) return null;
+
   // فایل نهایی همان فایل چانکی است؛ نیازی به کپی مجدد نیست (storeLocalFile آن را جابه‌جا می‌کند)
   return { tempPath: src, originalName: session.originalName, size: session.fileSize };
 }
