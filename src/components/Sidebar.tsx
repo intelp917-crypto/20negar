@@ -49,7 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   if (role === 'SuperAdmin') {
     navItems = [
       { id: 'superadmin', label: 'پنل مدیرکل', icon: <Crown className="w-4 h-4 text-amber-400" /> },
-      { id: 'dashboard', label: 'پیشخوان ادمین (تایید شده‌ها)', icon: <LayoutDashboard className="w-4 h-4" /> },
+      { id: 'dashboard', label: 'پیشخوان ادمین', icon: <LayoutDashboard className="w-4 h-4" /> },
       { id: 'all-videos', label: 'تمام پروژه‌ها و ویدیوها', icon: <Film className="w-4 h-4" /> },
       { id: 'editors', label: 'لیست تدوین‌گران', icon: <Users className="w-4 h-4" /> },
       { id: 'supervisors', label: 'لیست ناظران کیفی', icon: <Shield className="w-4 h-4" /> },

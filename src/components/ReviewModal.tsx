@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { X, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
-import { Video } from '../types/index.ts';
+import React, { useState, useEffect } from 'react';
+import { X, CheckCircle2, XCircle, AlertTriangle, UserCheck } from 'lucide-react';
+import { Video, User } from '../types/index.ts';
 import { api } from '../api/client.ts';
 
 interface ReviewModalProps {
@@ -19,8 +19,25 @@ export const ReviewModal: React.FC<ReviewModalProps> = ({
   onSuccess,
 }) => {
   const [comment, setComment] = useState('');
+  const [selectedAdminId, setSelectedAdminId] = useState<string>(video.adminId ? String(video.adminId) : '');
+  const [admins, setAdmins] = useState<User[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen && mode === 'approve') {
+      api.getAdmins()
+        .then((data) => {
+          setAdmins(data);
+          if (video.adminId) {
+            setSelectedAdminId(String(video.adminId));
+          } else if (data.length > 0 && !selectedAdminId) {
+            setSelectedAdminId(String(data[0].id));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isOpen, mode, video.adminId]);
 
   if (!isOpen) return null;
 
@@ -37,7 +54,8 @@ export const ReviewModal: React.FC<ReviewModalProps> = ({
     try {
       let updated: Video;
       if (mode === 'approve') {
-        updated = await api.approveVideo(video.id, comment.trim() || undefined);
+        const targetAdmin = selectedAdminId ? parseInt(selectedAdminId, 10) : null;
+        updated = await api.approveVideo(video.id, comment.trim() || undefined, targetAdmin);
       } else {
         updated = await api.rejectVideo(video.id, comment.trim());
       }
@@ -83,9 +101,33 @@ export const ReviewModal: React.FC<ReviewModalProps> = ({
         {/* Content */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs">
           {mode === 'approve' ? (
-            <p className="text-sm text-zinc-300 leading-relaxed">
-              با تایید این ویدیو، پروژه به بخش <strong>ویدیوهای تایید شده (Approved Catalog)</strong> منتقل شده و برای مدیران ارشد جهت دانلود و تحویل نهایی قابل دسترسی خواهد بود.
-            </p>
+            <>
+              <p className="text-sm text-zinc-300 leading-relaxed">
+                با تایید این ویدیو، پروژه به بخش <strong>ویدیوهای تایید شده</strong> منتقل شده و اختصاصاً در پنل ادمین انتخابی نمایش داده خواهد شد.
+              </p>
+
+              <div className="p-3.5 rounded-2xl bg-zinc-950 border border-purple-500/30 space-y-2">
+                <label className="flex items-center gap-2 text-xs font-bold text-zinc-200">
+                  <UserCheck className="w-4 h-4 text-purple-400" />
+                  <span>انتخاب ادمین مقصد (نمایش اختصاصی در پنل ادمین):</span>
+                </label>
+                <select
+                  value={selectedAdminId}
+                  onChange={(e) => setSelectedAdminId(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-700 focus:border-purple-500 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none"
+                >
+                  <option value="">بدون ادمین (فقط در آرشیو مدیرکل)</option>
+                  {admins.map((ad) => (
+                    <option key={ad.id} value={ad.id}>
+                      {ad.displayName} (@{ad.username})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-zinc-400">
+                  پروژه پس از تایید، فقط در پنل این ادمین و پنل مدیرکل قابل مشاهده خواهد بود.
+                </p>
+              </div>
+            </>
           ) : (
             <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 flex items-start gap-2.5">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />

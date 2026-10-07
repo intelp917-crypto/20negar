@@ -25,12 +25,30 @@ const __dirname = path.dirname(__filename);
 async function startServer() {
   const app = express();
 
-  // Basic security and parsing middlewares
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  // VPN, Reverse Proxy & Port Forwarding support
+  app.set('trust proxy', true);
 
   // Disable x-powered-by
   app.disable('x-powered-by');
+
+  // Universal CORS & Host headers support for VPN, WAN, and port-forwarded static IPs
+  app.use((req, res, next) => {
+    const origin = req.headers.origin || '*';
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Upload-Meta, Range');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(200);
+      return;
+    }
+    next();
+  });
+
+  // Basic security and parsing middlewares
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
   // Initialize Relational Database & Background Transcoder
   console.log('[Startup] Initializing Relational Database...');
@@ -62,7 +80,7 @@ async function startServer() {
     // Development mode: Mount Vite middleware
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true, cors: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);

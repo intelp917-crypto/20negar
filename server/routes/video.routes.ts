@@ -271,15 +271,17 @@ router.post(
   }
 );
 
-// POST /api/videos/:id/approve - Supervisor or SuperAdmin approval
+// POST /api/videos/:id/approve - Supervisor or SuperAdmin approval (with optional target admin)
 router.post('/:id/approve', authenticate, requireRole(['Supervisor', 'SuperAdmin']), (req: Request, res: Response): void => {
   try {
     const videoId = parseInt(req.params.id, 10);
-    const { comment } = req.body;
+    const { comment, adminId } = req.body;
+    const rawAdmin = adminId === null || adminId === undefined || adminId === '' ? null : parseInt(adminId, 10);
     const updated = VideoService.approveVideo(
       videoId,
       { id: req.user!.id, displayName: req.user!.displayName, ipAddress: req.ip, role: req.user!.role },
-      comment
+      comment,
+      rawAdmin && !Number.isNaN(rawAdmin) ? rawAdmin : null
     );
     res.json(updated);
   } catch (err: any) {
@@ -307,25 +309,9 @@ router.post('/:id/reject', authenticate, requireRole(['Supervisor', 'SuperAdmin'
   }
 });
 
-// POST /api/videos/:id/assign-editor - Supervisor, Admin or SuperAdmin
-router.post('/:id/assign-editor', authenticate, requireRole(['Supervisor', 'Admin', 'SuperAdmin']), (req: Request, res: Response): void => {
-  try {
-    const videoId = parseInt(req.params.id, 10);
-    const { editorId } = req.body;
-    if (!editorId) {
-      res.status(400).json({ error: 'شناسه تدوین‌گر الزامی است.' });
-      return;
-    }
-    const updated = VideoService.assignEditor(videoId, parseInt(editorId, 10), {
-      id: req.user!.id,
-      role: req.user!.role,
-      displayName: req.user!.displayName,
-      ipAddress: req.ip,
-    });
-    res.json(updated);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message || 'خطا در انتساب تدوین‌گر.' });
-  }
+// POST /api/videos/:id/assign-editor - غیرفعال (طبق دستور: در هیچ پنلی نشه تدوینگر یک ویدیو رو عوض کرد)
+router.post('/:id/assign-editor', authenticate, (_req: Request, res: Response): void => {
+  res.status(400).json({ error: 'امکان تغییر تدوین‌گر ویدیو وجود ندارد. تدوین‌گر در هیچ پنلی قابل تغییر نیست.' });
 });
 
 // POST /api/videos/:id/assign-supervisor - Editor, Admin or SuperAdmin
@@ -349,8 +335,8 @@ router.post('/:id/assign-supervisor', authenticate, requireRole(['Editor', 'Admi
   }
 });
 
-// POST /api/videos/:id/assign-admin - SuperAdmin only (انتخاب ادمین مقصد ویدیو پس از تایید ناظر)
-router.post('/:id/assign-admin', authenticate, requireRole(['SuperAdmin']), (req: Request, res: Response): void => {
+// POST /api/videos/:id/assign-admin - SuperAdmin & Supervisor (انتخاب ادمین مقصد ویدیو پس از تایید ناظر)
+router.post('/:id/assign-admin', authenticate, requireRole(['SuperAdmin', 'Supervisor']), (req: Request, res: Response): void => {
   try {
     const videoId = parseInt(req.params.id, 10);
     const raw = req.body.adminId;
@@ -372,46 +358,20 @@ router.post('/:id/assign-admin', authenticate, requireRole(['SuperAdmin']), (req
   }
 });
 
-// DELETE /api/videos/:id - Delete video and renditions (SuperAdmin or Admin)
-router.delete('/:id', authenticate, requireRole(['SuperAdmin', 'Admin']), async (req: Request, res: Response): Promise<void> => {
+// DELETE /api/videos/:id - Delete video (SuperAdmin, Editor for own video, Supervisor for assigned video)
+router.delete('/:id', authenticate, requireRole(['SuperAdmin', 'Editor', 'Supervisor']), async (req: Request, res: Response): Promise<void> => {
   try {
     const videoId = parseInt(req.params.id, 10);
-    const video = VideoService.getVideoById(videoId, req.user!);
-    if (!video) {
-      res.status(404).json({ error: 'ویدیو یافت نشد.' });
-      return;
-    }
-
-    // Delete physical files
-    try {
-      await fileStorage.deleteFile(video.originalPath);
-      if (video.thumbnailPath) await fileStorage.deleteFile(video.thumbnailPath);
-      if (video.qualities) {
-        for (const q of video.qualities) {
-          const qFile = path.join(PRIVATE_VIDEOS_DIR, `video_${videoId}_${q.quality}.mp4`);
-          if (fs.existsSync(qFile)) fs.unlinkSync(qFile);
-        }
-      }
-    } catch (fErr) {
-      console.warn('Physical file deletion warning:', fErr);
-    }
-
-    // Delete from DB (cascades to qualities, reviews, jobs)
-    const { db } = await import('../db/database.ts');
-    db.run('DELETE FROM videos WHERE id = ?', [videoId]);
-
-    AuditService.log(
-      req.user!.id,
-      'حذف ویدیو',
-      'Video',
-      videoId,
-      `ویدیوی "${video.title}" توسط ${req.user!.displayName} از سیستم حذف شد.`,
-      req.ip
-    );
-
-    res.json({ success: true, message: 'ویدیو با موفقیت حذف شد.' });
+    const result = await VideoService.deleteVideo(videoId, {
+      id: req.user!.id,
+      role: req.user!.role,
+      displayName: req.user!.displayName,
+      ipAddress: req.ip,
+    });
+    res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'خطا در حذف ویدیو.' });
+    const status = err.message?.includes('دسترسی مجاز') ? 403 : err.message?.includes('یافت نشد') ? 404 : 500;
+    res.status(status).json({ error: err.message || 'خطا در حذف ویدیو.' });
   }
 });
 

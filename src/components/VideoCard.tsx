@@ -3,7 +3,7 @@ import { Video } from '../types/index.ts';
 import { StatusBadge, ProcessingBadge } from './StatusBadge.tsx';
 import { DownloadMenu } from './DownloadMenu.tsx';
 import { api } from '../api/client.ts';
-import { Play, Film, Clock, User, Shield, Users, AlertTriangle, ArrowUpLeft } from 'lucide-react';
+import { Play, Film, Clock, User, Shield, Users, AlertTriangle, ArrowUpLeft, Trash2 } from 'lucide-react';
 
 interface VideoCardProps {
   video: Video;
@@ -11,6 +11,7 @@ interface VideoCardProps {
   onViewDetails: (video: Video) => void;
   onUploadNewVersion?: (video: Video) => void;
   onQuickReview?: (video: Video) => void;
+  onDelete?: (video: Video) => void;
   showSupervisorActions?: boolean;
 }
 
@@ -20,6 +21,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   onViewDetails,
   onUploadNewVersion,
   onQuickReview,
+  onDelete,
   showSupervisorActions = false,
 }) => {
   const [thumbError, setThumbError] = useState(false);
@@ -171,6 +173,19 @@ export const VideoCard: React.FC<VideoCardProps> = ({
             </button>
 
             <DownloadMenu video={video} size="sm" />
+
+            {onDelete && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(video);
+                }}
+                className="p-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 hover:border-rose-500/40 transition-colors"
+                title="حذف ویدیو"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           {showSupervisorActions && video.status === 'PendingReview' && onQuickReview && (

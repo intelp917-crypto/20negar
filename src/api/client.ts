@@ -266,10 +266,10 @@ export const api = {
     );
   },
 
-  approveVideo: (videoId: number, comment?: string) =>
+  approveVideo: (videoId: number, comment?: string, adminId?: number | null) =>
     request<Video>(`/api/videos/${videoId}/approve`, {
       method: 'POST',
-      body: JSON.stringify({ comment }),
+      body: JSON.stringify({ comment, adminId }),
     }),
 
   rejectVideo: (videoId: number, reason: string) =>

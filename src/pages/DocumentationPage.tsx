@@ -11,6 +11,7 @@ import {
   Copy,
   Check,
   Crown,
+  Globe,
 } from 'lucide-react';
 
 export const DocumentationPage: React.FC = () => {
@@ -201,6 +202,65 @@ NODE_ENV=production npm start`}
         <p className="text-xs text-zinc-300 leading-relaxed">
           هیچ ویدیویی در پوشه‌های عمومی وب قرار نمی‌گیرد. تمام فایل‌ها درون <code className="text-purple-300 font-mono">data/storage/</code> نگهداری شده و استریم آن‌ها صرفاً از طریق توکن‌های امضا شده و درخواست‌های HTTP 206 Partial Content میسر است.
         </p>
+      </section>
+
+      {/* Section 5: VPN & Port Forwarding Guide */}
+      <section className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+            <Globe className="w-5 h-5 text-emerald-400" />
+            <span>۵. راهنمای اتصال با VPN، آی‌پی ثابت و پورت فورواردینگ (Port Forwarding)</span>
+          </h2>
+          <button
+            onClick={() =>
+              copyToClipboard(
+                `netsh advfirewall firewall add rule name="20Negar Ports" dir=in action=allow protocol=TCP localport=3000,80,443`,
+                'firewall'
+              )
+            }
+            className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs flex items-center gap-1.5"
+          >
+            {copiedSection === 'firewall' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            <span>کپی دستور فایروال</span>
+          </button>
+        </div>
+
+        <p className="text-xs text-zinc-300 leading-relaxed">
+          اگر روی سیستم خود پورت فوروارد کرده‌اید و آی‌پی ثابت دارید، سرور ۲۰نگار به‌گونه‌ای مهندسی شده است که با فعال بودن VPN نیز کاملاً در دسترس بماند:
+        </p>
+
+        <div className="space-y-3 text-xs">
+          <div className="p-4 rounded-2xl bg-zinc-950 border border-zinc-800">
+            <strong className="text-emerald-400">۱. اتصال روی تمام کارت‌های شبکه (0.0.0.0):</strong>
+            <p className="text-zinc-400 mt-1">
+              سرور Express به‌جای <code className="text-purple-300 font-mono">localhost</code> بر روی <code className="text-purple-300 font-mono">0.0.0.0</code> متصل است؛ در نتیجه درخواست‌هایی که از طریق آی‌پی اینترنتی ثابت یا پورت‌های فوروارد شده ارسال می‌شوند، مسدود نمی‌شوند.
+            </p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-zinc-950 border border-zinc-800">
+            <strong className="text-emerald-400">۲. تنظیم VPN برای عدم مسدودسازی شبکه محلی (Bypass LAN):</strong>
+            <p className="text-zinc-400 mt-1">
+              در نرم‌افزار VPN خود (مانند v2rayN، Nekoray، Outline یا OpenVPN) گزینه‌های <strong>«Bypass LAN»</strong>، <strong>«Routing: Bypass private IPs»</strong> یا <strong>«Split Tunneling»</strong> را فعال کنید تا بسته‌های شبکه محلی به داخل تونل VPN فرستاده نشوند.
+            </p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-zinc-950 border border-zinc-800">
+            <strong className="text-emerald-400">۳. عبور از فایروال ویندوز:</strong>
+            <p className="text-zinc-400 mt-1">
+              در صورت باز نشدن صفحه در سایر دستگاه‌ها، دستور زیر را در CMD ویندوز با دسترسی Run as Administrator اجرا کنید:
+            </p>
+            <pre className="mt-2 p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] font-mono text-purple-300" dir="ltr">
+netsh advfirewall firewall add rule name="20Negar Ports" dir=in action=allow protocol=TCP localport=3000,80,443
+            </pre>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-zinc-950 border border-zinc-800">
+            <strong className="text-emerald-400">۴. پورت‌های استاندارد وب (۸۰ و ۴۴۳):</strong>
+            <p className="text-zinc-400 mt-1">
+              بسیاری از سرویس‌دهنده‌های اینترنت پورت‌های غیرمعمول را روی آی‌پی‌های ثابت می‌بندند؛ سرور ۲۰نگار علاوه بر پورت ۳۰۰۰ می‌تواند روی پورت‌های ۸۰ و ۴۴۳ نیز گوش دهد.
+            </p>
+          </div>
+        </div>
       </section>
     </div>
   );

@@ -13,6 +13,7 @@ import {
   RefreshCw,
   AlertTriangle,
   ArrowLeft,
+  Trash2,
 } from 'lucide-react';
 
 interface EditorDashboardProps {
@@ -31,6 +32,8 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
   const [currentTab, setCurrentTab] = useState<string>(activeFilter);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [revisionVideo, setRevisionVideo] = useState<Video | null>(null);
+  const [videoToDelete, setVideoToDelete] = useState<Video | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     setCurrentTab(activeFilter);
@@ -238,7 +241,7 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
           <Film className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
           <h3 className="text-sm font-bold text-zinc-300">هیچ ویدیویی در این دسته‌بندی یافت نشد</h3>
           <p className="text-xs text-zinc-500 mt-1 max-w-sm mx-auto mb-4">
-            کات‌های تدوین خود را بارگذاری کنید تا بررسی ناظر کیفی و فرآیند تبدیل خودکار FFmpeg آغاز شود.
+            کات‌های تدوین خود را بارگذاری کنید تا بررسی ناظر کیفی آغاز شود.
           </p>
           <button
             onClick={() => setIsUploadOpen(true)}
@@ -257,6 +260,7 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
               onWatch={onWatchVideo}
               onViewDetails={onViewDetails}
               onUploadNewVersion={(vid) => setRevisionVideo(vid)}
+              onDelete={(vid) => setVideoToDelete(vid)}
             />
           ))}
         </div>
@@ -282,6 +286,58 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
             setRevisionVideo(null);
           }}
         />
+      )}
+
+      {/* Delete Confirmation Modal for Editor */}
+      {videoToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-zinc-900 border border-rose-500/30 rounded-3xl p-6 shadow-2xl space-y-4 text-right">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">حذف ویدیو</h3>
+                <p className="text-xs text-zinc-400 font-mono" dir="ltr">{videoToDelete.originalFilename}</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-300 leading-relaxed">
+              آیا از حذف ویدیوی <strong>«{videoToDelete.title}»</strong> اطمینان دارید؟ تمام نسخه‌ها و فایل‌های این ویدیو حذف خواهند شد.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setVideoToDelete(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white rounded-xl hover:bg-zinc-800 transition-colors"
+              >
+                انصراف
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!videoToDelete) return;
+                  setIsDeleting(true);
+                  try {
+                    await api.deleteVideo(videoToDelete.id);
+                    setVideos((prev) => prev.filter((v) => v.id !== videoToDelete.id));
+                    setVideoToDelete(null);
+                  } catch (err: any) {
+                    alert(err.message || 'خطا در حذف ویدیو.');
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                disabled={isDeleting}
+                className="px-5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-xl shadow-lg shadow-rose-950/50 transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? 'در حال حذف...' : 'تایید و حذف'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

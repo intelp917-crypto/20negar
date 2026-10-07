@@ -49,6 +49,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [volume, setVolume] = useState<number>(1);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isPseudoFullscreen, setIsPseudoFullscreen] = useState<boolean>(false);
+  const lastFullscreenToggleRef = useRef<number>(0);
   const [selectedQuality, setSelectedQuality] = useState<string>('Auto');
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
   const [showQualityMenu, setShowQualityMenu] = useState<boolean>(false);
@@ -243,15 +245,143 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  const toggleFullscreen = () => {
-    if (!containerRef.current) return;
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch(() => {});
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch(() => {});
-      setIsFullscreen(false);
+  const toggleFullscreen = (e?: React.MouseEvent | React.TouchEvent) => {
+    if (e) {
+      if (typeof e.preventDefault === 'function') {
+        e.preventDefault();
+      }
+      e.stopPropagation();
     }
+
+    const now = Date.now();
+    if (now - lastFullscreenToggleRef.current < 400) {
+      return;
+    }
+    lastFullscreenToggleRef.current = now;
+
+    const container = containerRef.current;
+    const video = videoRef.current;
+    if (!container && !video) return;
+
+    if (isPseudoFullscreen) {
+      setIsPseudoFullscreen(false);
+      setIsFullscreen(false);
+      return;
+    }
+
+    const doc = document as any;
+    const isDocFs = !!(
+      doc.fullscreenElement ||
+      doc.webkitFullscreenElement ||
+      doc.mozFullScreenElement ||
+      doc.msFullscreenElement
+    );
+
+    if (isDocFs || isFullscreen) {
+      try {
+        if (doc.exitFullscreen) {
+          doc.exitFullscreen().catch(() => {});
+        } else if (doc.webkitExitFullscreen) {
+          doc.webkitExitFullscreen();
+        } else if (doc.mozCancelFullScreen) {
+          doc.mozCancelFullScreen();
+        } else if (doc.msExitFullscreen) {
+          doc.msExitFullscreen();
+        }
+      } catch (err) {
+        console.warn('Exit fullscreen error:', err);
+      }
+      setIsFullscreen(false);
+      setIsPseudoFullscreen(false);
+      return;
+    }
+
+    // Detect iOS devices (iPhone, iPad, iPod)
+    const isIOS = typeof navigator !== 'undefined' && (
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    );
+
+    // On iOS Safari, standard container.requestFullscreen is not supported on div elements;
+    // video.webkitEnterFullscreen is the native Apple method.
+    if (isIOS && video && typeof (video as any).webkitEnterFullscreen === 'function') {
+      try {
+        (video as any).webkitEnterFullscreen();
+        setIsFullscreen(true);
+        return;
+      } catch (err) {
+        console.warn('iOS webkitEnterFullscreen failed, trying container fallback:', err);
+      }
+    }
+
+    // Standard Fullscreen API on container
+    if (container?.requestFullscreen) {
+      container.requestFullscreen().then(() => {
+        setIsFullscreen(true);
+      }).catch((_err) => {
+        // If container fails (permissions, iframe policy, Android WebView), fallback to video element
+        if (video?.requestFullscreen) {
+          video.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {
+            setIsPseudoFullscreen(true);
+            setIsFullscreen(true);
+          });
+        } else if (video && typeof (video as any).webkitRequestFullscreen === 'function') {
+          try {
+            (video as any).webkitRequestFullscreen();
+            setIsFullscreen(true);
+          } catch {
+            setIsPseudoFullscreen(true);
+            setIsFullscreen(true);
+          }
+        } else if (video && typeof (video as any).webkitEnterFullscreen === 'function') {
+          try {
+            (video as any).webkitEnterFullscreen();
+            setIsFullscreen(true);
+          } catch {
+            setIsPseudoFullscreen(true);
+            setIsFullscreen(true);
+          }
+        } else {
+          setIsPseudoFullscreen(true);
+          setIsFullscreen(true);
+        }
+      });
+      return;
+    }
+
+    // Vendor prefixed methods on container
+    if (container && (container as any).webkitRequestFullscreen) {
+      try {
+        (container as any).webkitRequestFullscreen();
+        setIsFullscreen(true);
+        return;
+      } catch {
+        // continue to video fallback
+      }
+    }
+
+    // Direct video element requestFullscreen
+    if (video?.requestFullscreen) {
+      video.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {
+        setIsPseudoFullscreen(true);
+        setIsFullscreen(true);
+      });
+      return;
+    }
+
+    if (video && typeof (video as any).webkitEnterFullscreen === 'function') {
+      try {
+        (video as any).webkitEnterFullscreen();
+        setIsFullscreen(true);
+        return;
+      } catch {
+        // continue to pseudo fallback
+      }
+    }
+
+    // Universal pseudo-fullscreen fallback for all devices where API is blocked
+    setIsPseudoFullscreen(true);
+    setIsFullscreen(true);
   };
 
   const togglePictureInPicture = async () => {
@@ -304,12 +434,52 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
         skipTime(-5);
+      } else if (e.key === 'Escape') {
+        if (isPseudoFullscreen) {
+          setIsPseudoFullscreen(false);
+          setIsFullscreen(false);
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying, isMuted, duration]);
+  }, [isPlaying, isMuted, duration, isPseudoFullscreen]);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      const doc = document as any;
+      const isFs = !!(
+        doc.fullscreenElement ||
+        doc.webkitFullscreenElement ||
+        doc.mozFullScreenElement ||
+        doc.msFullscreenElement
+      );
+      setIsFullscreen(isFs);
+    };
+
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange);
+    document.addEventListener('mozfullscreenchange', onFsChange);
+
+    const video = videoRef.current;
+    const onWebkitBegin = () => setIsFullscreen(true);
+    const onWebkitEnd = () => setIsFullscreen(false);
+    if (video) {
+      video.addEventListener('webkitbeginfullscreen', onWebkitBegin);
+      video.addEventListener('webkitendfullscreen', onWebkitEnd);
+    }
+
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange);
+      document.removeEventListener('mozfullscreenchange', onFsChange);
+      if (video) {
+        video.removeEventListener('webkitbeginfullscreen', onWebkitBegin);
+        video.removeEventListener('webkitendfullscreen', onWebkitEnd);
+      }
+    };
+  }, []);
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
@@ -331,8 +501,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     <div
       ref={containerRef}
       onMouseMove={handleMouseMove}
+      onTouchStart={handleMouseMove}
       onMouseLeave={() => isPlaying && !showQualityMenu && !showSpeedMenu && setControlsVisible(false)}
-      className="relative w-full aspect-video bg-zinc-950 rounded-3xl overflow-hidden shadow-2xl group select-none border border-zinc-800 flex items-center justify-center"
+      className={`w-full aspect-video bg-zinc-950 overflow-hidden shadow-2xl group select-none flex items-center justify-center transition-all ${
+        isPseudoFullscreen
+          ? 'fixed inset-0 z-[99999] w-screen h-screen rounded-none bg-black border-none'
+          : 'relative rounded-3xl border border-zinc-800'
+      }`}
       dir="ltr"
     >
       <video
@@ -616,11 +791,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             )}
 
             <button
-              onClick={toggleFullscreen}
-              className="p-1.5 hover:text-purple-400 transition-colors rounded-lg hover:bg-white/10"
-              title={isFullscreen ? 'خروج از تمام صفحه' : 'تمام صفحه (F)'}
+              type="button"
+              onClick={(e) => {
+                toggleFullscreen(e);
+              }}
+              onTouchEnd={(e) => {
+                toggleFullscreen(e);
+              }}
+              className="p-2 sm:p-1.5 min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center hover:text-purple-400 text-zinc-100 transition-colors rounded-xl hover:bg-white/10 active:scale-95 touch-manipulation z-40 cursor-pointer pointer-events-auto"
+              title={isFullscreen || isPseudoFullscreen ? 'خروج از تمام صفحه' : 'تمام صفحه (F)'}
+              aria-label="حالت تمام صفحه"
             >
-              {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              {isFullscreen || isPseudoFullscreen ? (
+                <Minimize2 className="w-5 h-5 sm:w-4 sm:h-4" />
+              ) : (
+                <Maximize2 className="w-5 h-5 sm:w-4 sm:h-4" />
+              )}
             </button>
           </div>
         </div>

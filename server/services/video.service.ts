@@ -318,7 +318,12 @@ export class VideoService {
     return this.getVideoById(newVideoId, { id: params.editorId, role: 'Editor' })!;
   }
 
-  public static approveVideo(videoId: number, supervisor: { id: number; displayName: string; ipAddress?: string; role?: UserRole }, comment?: string): VideoDto {
+  public static approveVideo(
+    videoId: number,
+    supervisor: { id: number; displayName: string; ipAddress?: string; role?: UserRole },
+    comment?: string,
+    adminId?: number | null
+  ): VideoDto {
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
     
@@ -328,9 +333,23 @@ export class VideoService {
     }
 
     const now = new Date().toISOString();
+    let targetAdminId: number | null = null;
+    let targetAdminName: string | null = null;
+
+    if (adminId && adminId > 0) {
+      const admin = db.queryOne<UserEntity>(
+        'SELECT * FROM users WHERE id = ? AND role = ? AND is_active = 1',
+        [adminId, 'Admin']
+      );
+      if (admin) {
+        targetAdminId = admin.id;
+        targetAdminName = admin.display_name;
+      }
+    }
+
     db.run(
-      `UPDATE videos SET status = 'Approved', approved_at = ?, updated_at = ?, rejection_reason = NULL WHERE id = ?`,
-      [now, now, videoId]
+      `UPDATE videos SET status = 'Approved', approved_at = ?, updated_at = ?, rejection_reason = NULL, admin_id = COALESCE(?, admin_id) WHERE id = ?`,
+      [now, now, targetAdminId, videoId]
     );
 
     // Record review
@@ -346,7 +365,8 @@ export class VideoService {
       'تایید ویدیو',
       'Video',
       videoId,
-      `ناظر کیفی ${supervisor.displayName} ویدیوی "${video.title}" را تایید کرد: ${comment || 'بدون توضیح'}`,
+      `ناظر کیفی ${supervisor.displayName} ویدیوی "${video.title}" را تایید کرد` +
+        (targetAdminName ? ` و به ادمین ${targetAdminName} اختصاص داد.` : ': ' + (comment || 'بدون توضیح')),
       supervisor.ipAddress
     );
 
@@ -360,12 +380,22 @@ export class VideoService {
     );
 
     // Notify Admins
-    NotificationService.notifyAllAdmins(
-      'ویدیوی تایید شده جدید',
-      `پروژه "${video.title}" توسط ${supervisor.displayName} تایید شد و آماده تحویل در آرشیو استودیو ۲۰نگار است.`,
-      'success',
-      `/videos/${videoId}`
-    );
+    if (targetAdminId) {
+      NotificationService.create(
+        targetAdminId,
+        'ویدیوی تایید شده جدید در پنل شما',
+        `پروژه "${video.title}" توسط ${supervisor.displayName} تایید شد و اختصاصاً به پنل شما واگذار گردید.`,
+        'success',
+        `/videos/${videoId}`
+      );
+    } else {
+      NotificationService.notifyAllAdmins(
+        'ویدیوی تایید شده جدید',
+        `پروژه "${video.title}" توسط ${supervisor.displayName} تایید شد و آماده تحویل در آرشیو استودیو ۲۰نگار است.`,
+        'success',
+        `/videos/${videoId}`
+      );
+    }
 
     return this.getVideoById(videoId, { id: supervisor.id, role: supervisor.role || 'Supervisor' })!;
   }
@@ -422,38 +452,8 @@ export class VideoService {
     return this.getVideoById(videoId, { id: supervisor.id, role: supervisor.role || 'Supervisor' })!;
   }
 
-  public static assignEditor(videoId: number, newEditorId: number, user: { id: number; role: UserRole; displayName: string; ipAddress?: string }): VideoDto {
-    const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
-    if (!video) throw new Error('ویدیو یافت نشد.');
-
-    if (user.role !== 'Admin' && user.role !== 'SuperAdmin' && video.supervisor_id !== user.id) {
-      throw new Error('تنها ناظر کیفی مسئول پروژه یا مدیر ارشد امکان تغییر تدوین‌گر را دارد.');
-    }
-
-    const newEditor = db.queryOne<UserEntity>('SELECT * FROM users WHERE id = ? AND role = ? AND is_active = 1', [newEditorId, 'Editor']);
-    if (!newEditor) throw new Error('تدوین‌گر مورد نظر یافت نشد یا غیرفعال است.');
-
-    const now = new Date().toISOString();
-    db.run('UPDATE videos SET editor_id = ?, updated_at = ? WHERE id = ?', [newEditorId, now, videoId]);
-
-    AuditService.log(
-      user.id,
-      'تغییر تدوین‌گر',
-      'Video',
-      videoId,
-      `${user.displayName} تدوین‌گر ویدیوی "${video.title}" را به ${newEditor.display_name} تغییر داد.`,
-      user.ipAddress
-    );
-
-    NotificationService.create(
-      newEditorId,
-      'پروژه جدید به شما محول شد',
-      `شما به عنوان تدوین‌گر پروژه "${video.title}" منصوب شدید.`,
-      'info',
-      `/videos/${videoId}`
-    );
-
-    return this.getVideoById(videoId, user)!;
+  public static assignEditor(_videoId: number, _newEditorId: number, _user: { id: number; role: UserRole; displayName: string; ipAddress?: string }): VideoDto {
+    throw new Error('امکان تغییر تدوین‌گر ویدیو وجود ندارد. سازنده/تدوین‌گر ویدیو در هیچ پنلی قابل تغییر نیست.');
   }
 
   public static assignSupervisor(videoId: number, newSupervisorId: number, user: { id: number; role: UserRole; displayName: string; ipAddress?: string }): VideoDto {
@@ -491,8 +491,8 @@ export class VideoService {
   }
 
   /**
-   * انتساب ویدیو به یک ادمین مشخص (فقط مدیرکل).
-   * پس از تایید ناظر، مدیرکل ادمین را انتخاب می‌کند و ویدیو فقط در پنل همان ادمین دیده می‌شود.
+   * انتساب ویدیو به یک ادمین مشخص (توسط ناظر کیفی مسئول پروژه یا مدیرکل).
+   * پس از تایید ناظر، ادمین انتخاب می‌شود و ویدیو فقط در پنل همان ادمین دیده می‌شود.
    */
   public static assignAdmin(
     videoId: number,
@@ -501,6 +501,11 @@ export class VideoService {
   ): VideoDto {
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
+
+    // Only SuperAdmin OR the assigned Supervisor can assign an Admin
+    if (user.role !== 'SuperAdmin' && (user.role !== 'Supervisor' || video.supervisor_id !== user.id)) {
+      throw new Error('تنها ناظر کیفی مسئول این پروژه یا مدیرکل امکان تعیین ادمین مقصد را دارند.');
+    }
 
     let adminName: string | null = null;
     if (adminId !== null && adminId > 0) {
@@ -539,6 +544,77 @@ export class VideoService {
     }
 
     return this.getVideoById(videoId, user)!;
+  }
+
+  /**
+   * حذف ویدیو توسط مدیرکل، تدوین‌گر یا ناظر کیفی (فیچر ۵)
+   * - مدیرکل: حذف هر ویدیویی
+   * - تدوین‌گر: فقط ویدیوهای بارگذاری‌شده توسط خود
+   * - ناظر کیفی: فقط ویدیوهای محول‌شده به خود
+   */
+  public static async deleteVideo(
+    videoId: number,
+    user: { id: number; role: UserRole; displayName: string; ipAddress?: string }
+  ): Promise<{ success: boolean; message: string }> {
+    const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
+    if (!video) {
+      throw new Error('ویدیو یافت نشد.');
+    }
+
+    const isSuperAdmin = user.role === 'SuperAdmin';
+    const isOwnerEditor = user.role === 'Editor' && video.editor_id === user.id;
+    const isAssignedSupervisor = user.role === 'Supervisor' && video.supervisor_id === user.id;
+
+    if (!isSuperAdmin && !isOwnerEditor && !isAssignedSupervisor) {
+      throw new Error('شما دسترسی مجاز برای حذف این ویدیو را ندارید.');
+    }
+
+    // پاکسازی فایل‌های فیزیکی
+    try {
+      const { fileStorage } = await import('../storage/local.storage.ts');
+      const { PRIVATE_VIDEOS_DIR } = await import('../config.ts');
+      const path = (await import('path')).default;
+      const fs = (await import('fs')).default;
+
+      if (video.original_path) {
+        await fileStorage.deleteFile(video.original_path).catch(() => {});
+      }
+      if (video.thumbnail_path) {
+        await fileStorage.deleteFile(video.thumbnail_path).catch(() => {});
+      }
+
+      const qualities = db.query<any>('SELECT quality FROM video_qualities WHERE video_id = ?', [videoId]);
+      for (const q of qualities) {
+        const qFile = path.join(PRIVATE_VIDEOS_DIR, `video_${videoId}_${q.quality}.mp4`);
+        if (fs.existsSync(qFile)) {
+          try { fs.unlinkSync(qFile); } catch {}
+        }
+      }
+
+      const hlsDir = path.join(PRIVATE_VIDEOS_DIR, `hls_${videoId}`);
+      if (fs.existsSync(hlsDir)) {
+        try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch {}
+      }
+    } catch (fErr) {
+      console.warn('Physical file deletion warning:', fErr);
+    }
+
+    // حذف رکوردها از پایگاه داده
+    db.run('DELETE FROM video_reviews WHERE video_id = ?', [videoId]);
+    db.run('DELETE FROM video_qualities WHERE video_id = ?', [videoId]);
+    db.run('DELETE FROM transcoding_jobs WHERE video_id = ?', [videoId]);
+    db.run('DELETE FROM videos WHERE id = ?', [videoId]);
+
+    AuditService.log(
+      user.id,
+      'حذف ویدیو',
+      'Video',
+      videoId,
+      `ویدیوی "${video.title}" توسط ${user.displayName} (${user.role === 'SuperAdmin' ? 'مدیرکل' : user.role === 'Editor' ? 'تدوین‌گر' : 'ناظر کیفی'}) حذف شد.`,
+      user.ipAddress
+    );
+
+    return { success: true, message: 'ویدیو با موفقیت حذف شد.' };
   }
 
   /**

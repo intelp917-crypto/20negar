@@ -12,6 +12,8 @@ import {
   FolderGit2,
   RefreshCw,
   User as UserIcon,
+  UserCheck,
+  Trash2,
 } from 'lucide-react';
 
 interface SupervisorDashboardProps {
@@ -27,9 +29,11 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
 }) => {
   const toast = useToast();
   const [videos, setVideos] = useState<Video[]>([]);
-  const [editors, setEditors] = useState<User[]>([]);
+  const [admins, setAdmins] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [currentTab, setCurrentTab] = useState<string>(activeFilter);
+  const [videoToDelete, setVideoToDelete] = useState<Video | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [reviewModalState, setReviewModalState] = useState<{
     video: Video | null;
     mode: 'approve' | 'reject';
@@ -42,9 +46,9 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const [vData, edData] = await Promise.all([api.getVideos(), api.getEditors()]);
+      const [vData, adData] = await Promise.all([api.getVideos(), api.getAdmins()]);
       setVideos(vData);
-      setEditors(edData);
+      setAdmins(adData);
     } catch (err) {
       console.error('Failed to load supervisor data:', err);
     } finally {
@@ -56,13 +60,13 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     fetchData();
   }, []);
 
-  const handleEditorChange = async (videoId: number, newEditorId: number) => {
+  const handleAdminChange = async (videoId: number, newAdminId: number) => {
     try {
-      const updated = await api.assignEditor(videoId, newEditorId);
+      const updated = await api.assignAdmin(videoId, newAdminId > 0 ? newAdminId : null);
       setVideos((prev) => prev.map((v) => (v.id === videoId ? updated : v)));
-      toast.success('تدوین‌گر پروژه با موفقیت تغییر یافت.');
+      toast.success(newAdminId > 0 ? 'ادمین مقصد پروژه با موفقیت تعیین شد.' : 'انتساب ادمین لغو شد.');
     } catch (err: any) {
-      toast.error(err.message || 'خطا در تخصیص تدوین‌گر.');
+      toast.error(err.message || 'خطا در انتساب ادمین مقصد.');
     }
   };
 
@@ -245,22 +249,24 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 onViewDetails={onViewDetails}
                 showSupervisorActions={true}
                 onQuickReview={(vid) => setReviewModalState({ video: vid, mode: 'approve' })}
+                onDelete={(vid) => setVideoToDelete(vid)}
               />
 
-              {/* Requirement 4 & 13: Supervisor Select/Change Editor dropdown */}
-              <div className="mt-2 p-2.5 rounded-2xl bg-zinc-900/90 border border-zinc-800 text-xs flex items-center justify-between">
-                <span className="text-zinc-500 flex items-center gap-1.5">
-                  <UserIcon className="w-3.5 h-3.5 text-zinc-400" />
-                  <span>تغییر تدوین‌گر:</span>
+              {/* انتخاب ادمین مقصد در پنل ناظر کیفی */}
+              <div className="mt-2 p-2.5 rounded-2xl bg-zinc-900/90 border border-purple-500/30 text-xs flex items-center justify-between">
+                <span className="text-zinc-300 flex items-center gap-1.5 font-medium">
+                  <UserCheck className="w-3.5 h-3.5 text-purple-400" />
+                  <span>ادمین مقصد:</span>
                 </span>
                 <select
-                  value={v.editorId}
-                  onChange={(e) => handleEditorChange(v.id, Number(e.target.value))}
-                  className="bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1 text-zinc-200 text-xs focus:outline-none focus:border-purple-500"
+                  value={v.adminId ?? 0}
+                  onChange={(e) => handleAdminChange(v.id, Number(e.target.value))}
+                  className="bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-lg px-2 py-1 text-zinc-200 text-xs focus:outline-none"
                 >
-                  {editors.map((ed) => (
-                    <option key={ed.id} value={ed.id}>
-                      {ed.displayName}
+                  <option value={0}>بدون ادمین (فقط مدیرکل)</option>
+                  {admins.map((ad) => (
+                    <option key={ad.id} value={ad.id}>
+                      {ad.displayName} (@{ad.username})
                     </option>
                   ))}
                 </select>
@@ -302,6 +308,59 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
             setReviewModalState({ video: null, mode: 'approve' });
           }}
         />
+      )}
+
+      {/* Delete Confirmation Modal for Supervisor */}
+      {videoToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-zinc-900 border border-rose-500/30 rounded-3xl p-6 shadow-2xl space-y-4 text-right">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">حذف ویدیو</h3>
+                <p className="text-xs text-zinc-400 font-mono" dir="ltr">{videoToDelete.originalFilename}</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-300 leading-relaxed">
+              آیا از حذف ویدیوی <strong>«{videoToDelete.title}»</strong> اطمینان دارید؟ تمام فایل‌ها و سوابق این پروژه به صورت کامل پاک خواهند شد.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setVideoToDelete(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white rounded-xl hover:bg-zinc-800 transition-colors"
+              >
+                انصراف
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!videoToDelete) return;
+                  setIsDeleting(true);
+                  try {
+                    await api.deleteVideo(videoToDelete.id);
+                    setVideos((prev) => prev.filter((v) => v.id !== videoToDelete.id));
+                    setVideoToDelete(null);
+                    toast.success('ویدیو با موفقیت حذف گردید.');
+                  } catch (err: any) {
+                    toast.error(err.message || 'خطا در حذف ویدیو.');
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                disabled={isDeleting}
+                className="px-5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-xl shadow-lg shadow-rose-950/50 transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? 'در حال حذف...' : 'تایید و حذف'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

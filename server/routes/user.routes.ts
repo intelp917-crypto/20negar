@@ -29,8 +29,8 @@ router.get('/supervisors', authenticate, (_req: Request, res: Response): void =>
   }
 });
 
-// GET /api/admins - Active admins list (برای انتساب ادمین مقصد ویدیو)
-router.get('/admins', authenticate, requireRole(['Admin', 'SuperAdmin']), (_req: Request, res: Response): void => {
+// GET /api/admins - Active admins list (برای انتساب ادمین مقصد ویدیو توسط ناظر کیفی یا مدیرکل)
+router.get('/admins', authenticate, requireRole(['Admin', 'SuperAdmin', 'Supervisor']), (_req: Request, res: Response): void => {
   try {
     const admins = AuthService.getUsersByRole('Admin');
     res.json(admins);

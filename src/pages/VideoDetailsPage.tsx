@@ -4,7 +4,6 @@ import { api } from '../api/client.ts';
 import { useAuth } from '../context/AuthContext.tsx';
 import { VideoPlayer } from '../components/VideoPlayer.tsx';
 import { StatusBadge } from '../components/StatusBadge.tsx';
-import { ProcessingStatusCard } from '../components/ProcessingStatusCard.tsx';
 import { DownloadMenu } from '../components/DownloadMenu.tsx';
 import { ReviewModal } from '../components/ReviewModal.tsx';
 import { NewVersionModal } from '../components/NewVersionModal.tsx';
@@ -21,6 +20,7 @@ import {
   MessageSquare,
   AlertTriangle,
   UploadCloud,
+  Trash2,
 } from 'lucide-react';
 
 interface VideoDetailsPageProps {
@@ -47,6 +47,8 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
   }>({ isOpen: false, mode: 'approve' });
 
   const [isNewVersionOpen, setIsNewVersionOpen] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const fetchVideo = async () => {
     setIsLoading(true);
@@ -58,7 +60,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
       const [edList, spList, adList] = await Promise.all([
         api.getEditors(),
         api.getSupervisors(),
-        user?.role === 'SuperAdmin' ? api.getAdmins() : Promise.resolve([]),
+        (user?.role === 'SuperAdmin' || user?.role === 'Supervisor') ? api.getAdmins() : Promise.resolve([]),
       ]);
       setEditors(edList);
       setSupervisors(spList);
@@ -73,17 +75,6 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
   useEffect(() => {
     fetchVideo();
   }, [videoId]);
-
-  const handleEditorChange = async (newEditorId: number) => {
-    if (!video) return;
-    try {
-      const updated = await api.assignEditor(video.id, newEditorId);
-      setVideo(updated);
-      alert('تدوین‌گر پروژه با موفقیت تغییر کرد.');
-    } catch (err: any) {
-      alert(err.message || 'خطا در تخصیص تدوین‌گر.');
-    }
-  };
 
   const handleSupervisorChange = async (newSupervisorId: number) => {
     if (!video) return;
@@ -149,6 +140,21 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
 
   const isAssignedSupervisor = isSupervisor && video.supervisorId === user?.id;
   const isOwnerEditor = isEditor && video.editorId === user?.id;
+  const canDelete = isSuperAdmin || isOwnerEditor || isSupervisor;
+
+  const handleDeleteVideo = async () => {
+    if (!video) return;
+    setIsDeleting(true);
+    try {
+      await api.deleteVideo(video.id);
+      setIsDeleteConfirmOpen(false);
+      onBack();
+    } catch (err: any) {
+      alert(err.message || 'خطا در حذف ویدیو.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto" dir="rtl">
@@ -163,6 +169,15 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
         </button>
 
         <div className="flex items-center gap-2">
+          {canDelete && (
+            <button
+              onClick={() => setIsDeleteConfirmOpen(true)}
+              className="py-2 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-bold transition-all flex items-center gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>حذف ویدیو</span>
+            </button>
+          )}
           <DownloadMenu video={video} variant="primary" />
         </div>
       </div>
@@ -234,9 +249,6 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
               </button>
             </div>
           )}
-
-          {/* Processing Pipeline */}
-          <ProcessingStatusCard video={video} onReady={fetchVideo} />
 
           {/* Review History */}
           {video.reviews && video.reviews.length > 0 && (
@@ -354,32 +366,14 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                 انتساب و مسئولیت‌های پروژه
               </h4>
 
-              {/* Editor Assignment */}
+              {/* Editor Assignment (ثابت و غیرقابل تغییر) */}
               <div className="p-3 rounded-2xl bg-zinc-950 border border-zinc-800 space-y-1.5">
                 <div className="flex items-center justify-between text-xs text-zinc-400">
                   <span className="flex items-center gap-1.5">
                     <UserIcon className="w-3.5 h-3.5 text-sky-400" /> تدوین‌گر پروژه:
                   </span>
-                  {(isSupervisor || isAdmin || isSuperAdmin) && (
-                    <span className="text-[10px] text-purple-400">قابلیت تغییر</span>
-                  )}
                 </div>
-
-                {isSupervisor || isAdmin || isSuperAdmin ? (
-                  <select
-                    value={video.editorId}
-                    onChange={(e) => handleEditorChange(Number(e.target.value))}
-                    className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-purple-500"
-                  >
-                    {editors.map((ed) => (
-                      <option key={ed.id} value={ed.id}>
-                        {ed.displayName} (@{ed.username})
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <div className="text-xs font-bold text-zinc-200">{video.editorName}</div>
-                )}
+                <div className="text-xs font-bold text-zinc-200">{video.editorName}</div>
               </div>
 
               {/* Supervisor Assignment */}
@@ -410,8 +404,8 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                 )}
               </div>
 
-              {/* Admin Destination Assignment (فقط مدیرکل) */}
-              {isSuperAdmin && (
+              {/* Admin Destination Assignment (مدیرکل یا ناظر کیفی) */}
+              {(isSuperAdmin || isSupervisor) && (
                 <div className="p-3 rounded-2xl bg-zinc-950 border border-purple-500/30 space-y-1.5">
                   <div className="flex items-center justify-between text-xs text-zinc-400">
                     <span className="flex items-center gap-1.5">
@@ -425,7 +419,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                     onChange={(e) => handleAdminChange(Number(e.target.value))}
                     className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-purple-500"
                   >
-                    <option value={0}>بدون ادمین (فقط برای مدیرکل)</option>
+                    <option value={0}>بدون ادمین (فقط در آرشیو مدیرکل)</option>
                     {admins.map((ad) => (
                       <option key={ad.id} value={ad.id}>
                         {ad.displayName} (@{ad.username})
@@ -436,14 +430,16 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
               )}
 
               {/* نمایش ادمین مقصد برای سایر نقش‌ها */}
-              {!isSuperAdmin && video.adminName && (
+              {!(isSuperAdmin || isSupervisor) && (
                 <div className="p-3 rounded-2xl bg-zinc-950 border border-zinc-800 space-y-1.5">
                   <div className="flex items-center justify-between text-xs text-zinc-400">
                     <span className="flex items-center gap-1.5">
                       <UserIcon className="w-3.5 h-3.5 text-purple-400" /> ادمین مسئول:
                     </span>
                   </div>
-                  <div className="text-xs font-bold text-zinc-200">{video.adminName}</div>
+                  <div className="text-xs font-bold text-zinc-200">
+                    {video.adminName || 'تعیین نشده (فقط در آرشیو مدیرکل)'}
+                  </div>
                 </div>
               )}
             </div>
@@ -501,6 +497,46 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
           setIsNewVersionOpen(false);
         }}
       />
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-zinc-900 border border-rose-500/30 rounded-3xl p-6 shadow-2xl space-y-4 text-right">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">حذف کامل ویدیو از سامانه</h3>
+                <p className="text-xs text-zinc-400 font-mono" dir="ltr">{video.originalFilename}</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-300 leading-relaxed">
+              آیا از حذف ویدیوی <strong>«{video.title}»</strong> اطمینان دارید؟ تمامی فایل‌های اصلی، نسخه‌های تبدیل‌شده و سوابق بازبینی این ویدیو برای همیشه پاک خواهند شد و این عملیات قابل بازگشت نیست.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setIsDeleteConfirmOpen(false)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white rounded-xl hover:bg-zinc-800 transition-colors"
+              >
+                انصراف
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteVideo}
+                disabled={isDeleting}
+                className="px-5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-xl shadow-lg shadow-rose-950/50 transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? 'در حال حذف...' : 'تایید و حذف دائمی'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
