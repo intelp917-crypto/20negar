@@ -23,12 +23,12 @@ export async function seedDatabase(): Promise<void> {
     const res = db.run(
       `INSERT INTO users (username, password_hash, role, display_name, is_active, created_at, updated_at)
        VALUES (?, ?, 'SuperAdmin', ?, 1, ?, ?)`,
-      ['superadmin', superadminHash, 'سامان کیانی (مدیرکل - دسترسی همه چی)', now, now]
+      ['superadmin', superadminHash, 'سامان کیانی (مدیرکل)', now, now]
     );
     superadminId = res.lastInsertRowid;
   } else {
     superadminId = superadminUser.id;
-    db.run("UPDATE users SET display_name = 'سامان کیانی (مدیرکل - دسترسی همه چی)' WHERE username = 'superadmin'");
+    db.run("UPDATE users SET display_name = 'سامان کیانی (مدیرکل)' WHERE username = 'superadmin'");
   }
 
   if (count <= 1) {

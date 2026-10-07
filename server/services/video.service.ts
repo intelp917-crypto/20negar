@@ -37,6 +37,9 @@ export interface VideoDto {
   supervisorId: number;
   supervisorName: string;
   supervisorUsername: string;
+  adminId: number | null;
+  adminName: string | null;
+  adminUsername: string | null;
   status: 'Uploaded' | 'PendingReview' | 'Approved' | 'Rejected';
   processingStatus: 'Uploading' | 'Processing' | 'Ready' | 'ProcessingFailed';
   duration: number;
@@ -75,6 +78,7 @@ export class VideoService {
         ed.display_name as editorName, ed.username as editorUsername,
         v.supervisor_id as supervisorId,
         sp.display_name as supervisorName, sp.username as supervisorUsername,
+        v.admin_id as adminId, ad.display_name as adminName, ad.username as adminUsername,
         v.status, v.processing_status as processingStatus, v.duration,
         v.original_resolution as originalResolution, v.file_size as fileSize,
         v.version_number as versionNumber, v.parent_video_id as parentVideoId,
@@ -83,6 +87,7 @@ export class VideoService {
       FROM videos v
       JOIN users ed ON v.editor_id = ed.id
       JOIN users sp ON v.supervisor_id = sp.id
+      LEFT JOIN users ad ON v.admin_id = ad.id
       WHERE 1=1
     `;
     const params: any[] = [];
@@ -97,8 +102,9 @@ export class VideoService {
       sql += ` AND v.supervisor_id = ?`;
       params.push(user.id);
     } else if (user.role === 'Admin') {
-      // Admin sees approved videos in the studio catalog
-      sql += ` AND v.status = 'Approved'`;
+      // Admin ONLY sees approved videos that the SuperAdmin assigned to them
+      sql += ` AND v.status = 'Approved' AND v.admin_id = ?`;
+      params.push(user.id);
     } else if (user.role === 'SuperAdmin') {
       // SuperAdmin has global visibility and can filter by editor/supervisor if specified
       if (filters.editorId) {
@@ -163,6 +169,7 @@ export class VideoService {
         ed.display_name as editorName, ed.username as editorUsername,
         v.supervisor_id as supervisorId,
         sp.display_name as supervisorName, sp.username as supervisorUsername,
+        v.admin_id as adminId, ad.display_name as adminName, ad.username as adminUsername,
         v.status, v.processing_status as processingStatus, v.duration,
         v.original_resolution as originalResolution, v.file_size as fileSize,
         v.version_number as versionNumber, v.parent_video_id as parentVideoId,
@@ -171,6 +178,7 @@ export class VideoService {
       FROM videos v
       JOIN users ed ON v.editor_id = ed.id
       JOIN users sp ON v.supervisor_id = sp.id
+      LEFT JOIN users ad ON v.admin_id = ad.id
       WHERE v.id = ?
     `;
     const video = db.queryOne<VideoDto>(sql, [videoId]);
@@ -183,7 +191,7 @@ export class VideoService {
     if (user.role === 'Supervisor' && video.supervisorId !== user.id) {
       return null;
     }
-    if (user.role === 'Admin' && video.status !== 'Approved') {
+    if (user.role === 'Admin' && (video.status !== 'Approved' || video.adminId !== user.id)) {
       return null;
     }
 
@@ -483,6 +491,57 @@ export class VideoService {
   }
 
   /**
+   * انتساب ویدیو به یک ادمین مشخص (فقط مدیرکل).
+   * پس از تایید ناظر، مدیرکل ادمین را انتخاب می‌کند و ویدیو فقط در پنل همان ادمین دیده می‌شود.
+   */
+  public static assignAdmin(
+    videoId: number,
+    adminId: number | null,
+    user: { id: number; role: UserRole; displayName: string; ipAddress?: string }
+  ): VideoDto {
+    const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
+    if (!video) throw new Error('ویدیو یافت نشد.');
+
+    let adminName: string | null = null;
+    if (adminId !== null && adminId > 0) {
+      const admin = db.queryOne<UserEntity>(
+        'SELECT * FROM users WHERE id = ? AND role = ? AND is_active = 1',
+        [adminId, 'Admin']
+      );
+      if (!admin) throw new Error('ادمین مورد نظر یافت نشد یا غیرفعال است.');
+      adminName = admin.display_name;
+    } else {
+      adminId = null;
+    }
+
+    const now = new Date().toISOString();
+    db.run('UPDATE videos SET admin_id = ?, updated_at = ? WHERE id = ?', [adminId, now, videoId]);
+
+    AuditService.log(
+      user.id,
+      adminId ? 'انتساب ویدیو به ادمین' : 'لغو انتساب ادمین',
+      'Video',
+      videoId,
+      adminId
+        ? `${user.displayName} ویدیوی "${video.title}" را به ادمین ${adminName} منتقل کرد.`
+        : `${user.displayName} انتساب ادمین ویدیوی "${video.title}" را لغو کرد.`,
+      user.ipAddress
+    );
+
+    if (adminId) {
+      NotificationService.create(
+        adminId,
+        'ویدیوی جدید به آرشیو شما اضافه شد',
+        `پروژه "${video.title}" توسط ${user.displayName} به پنل شما منتقل شد.`,
+        'info',
+        `/videos/${videoId}`
+      );
+    }
+
+    return this.getVideoById(videoId, user)!;
+  }
+
+  /**
    * Scoped statistics: each role only sees counts for their own segmented scope.
    */
   public static getStats(user: { id: number; role: UserRole }) {
@@ -502,13 +561,23 @@ export class VideoService {
       return { totalVideos, pendingVideos, approvedVideos, rejectedVideos, totalEditors: 1, totalSupervisors: 1 };
     }
 
-    // Admin & SuperAdmin
+    const totalEditors = (db.queryOne<any>("SELECT COUNT(*) as c FROM users WHERE role = 'Editor' AND is_active = 1")?.c as number) || 0;
+    const totalSupervisors = (db.queryOne<any>("SELECT COUNT(*) as c FROM users WHERE role = 'Supervisor' AND is_active = 1")?.c as number) || 0;
+
+    // Admin: فقط ویدیوهایی که مدیرکل به همین ادمین انتساب داده است
+    if (user.role === 'Admin') {
+      const totalVideos = (db.queryOne<any>('SELECT COUNT(*) as c FROM videos WHERE admin_id = ? AND status = ?', [user.id, 'Approved'])?.c as number) || 0;
+      const pendingVideos = (db.queryOne<any>('SELECT COUNT(*) as c FROM videos WHERE admin_id = ? AND status = ?', [user.id, 'PendingReview'])?.c as number) || 0;
+      const approvedVideos = (db.queryOne<any>('SELECT COUNT(*) as c FROM videos WHERE admin_id = ? AND status = ?', [user.id, 'Approved'])?.c as number) || 0;
+      const rejectedVideos = (db.queryOne<any>('SELECT COUNT(*) as c FROM videos WHERE admin_id = ? AND status = ?', [user.id, 'Rejected'])?.c as number) || 0;
+      return { totalVideos, pendingVideos, approvedVideos, rejectedVideos, totalEditors, totalSupervisors };
+    }
+
+    // SuperAdmin: دیدگاه سراسری
     const totalVideos = (db.queryOne<any>('SELECT COUNT(*) as c FROM videos')?.c as number) || 0;
     const pendingVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE status = 'PendingReview'")?.c as number) || 0;
     const approvedVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE status = 'Approved'")?.c as number) || 0;
     const rejectedVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE status = 'Rejected'")?.c as number) || 0;
-    const totalEditors = (db.queryOne<any>("SELECT COUNT(*) as c FROM users WHERE role = 'Editor' AND is_active = 1")?.c as number) || 0;
-    const totalSupervisors = (db.queryOne<any>("SELECT COUNT(*) as c FROM users WHERE role = 'Supervisor' AND is_active = 1")?.c as number) || 0;
 
     return {
       totalVideos,

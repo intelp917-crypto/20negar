@@ -3,7 +3,7 @@ import { Video } from '../types/index.ts';
 import { StatusBadge, ProcessingBadge } from './StatusBadge.tsx';
 import { DownloadMenu } from './DownloadMenu.tsx';
 import { api } from '../api/client.ts';
-import { Play, Film, Clock, User, Shield, AlertTriangle, ArrowUpLeft } from 'lucide-react';
+import { Play, Film, Clock, User, Shield, Users, AlertTriangle, ArrowUpLeft } from 'lucide-react';
 
 interface VideoCardProps {
   video: Video;
@@ -119,6 +119,16 @@ export const VideoCard: React.FC<VideoCardProps> = ({
                 {video.supervisorName}
               </span>
             </div>
+            {video.adminName && (
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-500 flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-purple-400/80" /> ادمین مقصد:
+                </span>
+                <span className="font-semibold text-zinc-300 truncate max-w-[140px]" title={video.adminName}>
+                  {video.adminName}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Resolution & File Size */}

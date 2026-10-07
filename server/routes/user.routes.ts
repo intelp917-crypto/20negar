@@ -4,6 +4,7 @@ import { AuditService } from '../services/audit.service.ts';
 import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
 import { db } from '../db/database.ts';
 import { STORAGE_DIR } from '../config.ts';
+import { UpdateService } from '../services/update.service.ts';
 import fs from 'fs';
 
 const router = Router();
@@ -25,6 +26,16 @@ router.get('/supervisors', authenticate, (_req: Request, res: Response): void =>
     res.json(supervisors);
   } catch (err: any) {
     res.status(500).json({ error: 'خطا در دریافت لیست ناظران.' });
+  }
+});
+
+// GET /api/admins - Active admins list (برای انتساب ادمین مقصد ویدیو)
+router.get('/admins', authenticate, requireRole(['Admin', 'SuperAdmin']), (_req: Request, res: Response): void => {
+  try {
+    const admins = AuthService.getUsersByRole('Admin');
+    res.json(admins);
+  } catch (err: any) {
+    res.status(500).json({ error: 'خطا در دریافت لیست ادمین‌ها.' });
   }
 });
 
@@ -254,6 +265,45 @@ router.get('/system/transcode-jobs', authenticate, requireRole(['SuperAdmin', 'A
     res.json(formatted);
   } catch (err: any) {
     res.status(500).json({ error: 'خطا در بارگذاری صف تبدیل ویدیوها.' });
+  }
+});
+
+// GET /api/system/update-status - بررسی وجود نسخه جدید در ریپوزیتوری (SuperAdmin only)
+router.get('/system/update-status', authenticate, requireRole(['SuperAdmin']), (_req: Request, res: Response): void => {
+  try {
+    res.json(UpdateService.getStatus());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'خطا در بررسی وضعیت بروزرسانی.' });
+  }
+});
+
+// POST /api/system/update - بروزرسانی اجباری از ریپوزیتوری + ری‌استارت سرور (SuperAdmin only)
+router.post('/system/update', authenticate, requireRole(['SuperAdmin']), async (_req: Request, res: Response): Promise<void> => {
+  try {
+    AuditService.log(
+      _req.user!.id,
+      'بروزرسانی اجباری وب‌اپ',
+      'System',
+      null,
+      `بروزرسانی اجباری وب‌اپ از ریپوزیتوری توسط ${_req.user!.displayName} آغاز شد.`,
+      _req.ip
+    );
+    const result = await UpdateService.forceUpdate();
+    res.json({
+      success: !result.error,
+      changed: result.changed,
+      filesChanged: result.filesChanged,
+      npmInstalled: result.npmInstalled,
+      restarting: result.restarting,
+      error: result.error,
+      message: result.error
+        ? result.error
+        : result.changed
+          ? `بروزرسانی اعمال شد (${result.filesChanged} فایل). سرور در حال ری‌استارت است...`
+          : 'نسخه وب‌اپ از قبل به‌روز است.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'خطا در بروزرسانی وب‌اپ.' });
   }
 });
 

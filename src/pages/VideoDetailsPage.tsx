@@ -37,6 +37,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
   const [video, setVideo] = useState<Video | null>(null);
   const [editors, setEditors] = useState<User[]>([]);
   const [supervisors, setSupervisors] = useState<User[]>([]);
+  const [admins, setAdmins] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,9 +55,14 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
       const data = await api.getVideoById(videoId);
       setVideo(data);
 
-      const [edList, spList] = await Promise.all([api.getEditors(), api.getSupervisors()]);
+      const [edList, spList, adList] = await Promise.all([
+        api.getEditors(),
+        api.getSupervisors(),
+        user?.role === 'SuperAdmin' ? api.getAdmins() : Promise.resolve([]),
+      ]);
       setEditors(edList);
       setSupervisors(spList);
+      setAdmins(adList);
     } catch (err: any) {
       setError(err.message || 'خطا در بارگذاری مشخصات ویدیو.');
     } finally {
@@ -87,6 +93,17 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
       alert('ناظر کیفی پروژه با موفقیت تغییر کرد.');
     } catch (err: any) {
       alert(err.message || 'خطا در تخصیص سرپرست.');
+    }
+  };
+
+  const handleAdminChange = async (newAdminId: number) => {
+    if (!video) return;
+    try {
+      const updated = await api.assignAdmin(video.id, newAdminId > 0 ? newAdminId : null);
+      setVideo(updated);
+      alert('ادمین مقصد ویدیو با موفقیت تعیین شد.');
+    } catch (err: any) {
+      alert(err.message || 'خطا در انتساب ادمین.');
     }
   };
 
@@ -392,6 +409,43 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                   <div className="text-xs font-bold text-zinc-200">{video.supervisorName}</div>
                 )}
               </div>
+
+              {/* Admin Destination Assignment (فقط مدیرکل) */}
+              {isSuperAdmin && (
+                <div className="p-3 rounded-2xl bg-zinc-950 border border-purple-500/30 space-y-1.5">
+                  <div className="flex items-center justify-between text-xs text-zinc-400">
+                    <span className="flex items-center gap-1.5">
+                      <UserIcon className="w-3.5 h-3.5 text-purple-400" /> ادمین مقصد (پنل نمایش):
+                    </span>
+                    <span className="text-[10px] text-purple-400">فقط در پنل همین ادمین دیده می‌شود</span>
+                  </div>
+
+                  <select
+                    value={video.adminId ?? 0}
+                    onChange={(e) => handleAdminChange(Number(e.target.value))}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-purple-500"
+                  >
+                    <option value={0}>بدون ادمین (فقط برای مدیرکل)</option>
+                    {admins.map((ad) => (
+                      <option key={ad.id} value={ad.id}>
+                        {ad.displayName} (@{ad.username})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* نمایش ادمین مقصد برای سایر نقش‌ها */}
+              {!isSuperAdmin && video.adminName && (
+                <div className="p-3 rounded-2xl bg-zinc-950 border border-zinc-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-xs text-zinc-400">
+                    <span className="flex items-center gap-1.5">
+                      <UserIcon className="w-3.5 h-3.5 text-purple-400" /> ادمین مسئول:
+                    </span>
+                  </div>
+                  <div className="text-xs font-bold text-zinc-200">{video.adminName}</div>
+                </div>
+              )}
             </div>
 
             {/* Available Downloads */}

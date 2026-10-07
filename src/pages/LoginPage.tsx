@@ -139,7 +139,7 @@ export const LoginPage: React.FC = () => {
                 className="p-2.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800 border border-amber-500/40 text-right transition-colors group"
               >
                 <div className="text-[11px] font-bold text-amber-300 flex items-center gap-1">
-                  <Crown className="w-3 h-3 text-amber-400" /> مدیرکل (دسترسی همه چی)
+                  <Crown className="w-3 h-3 text-amber-400" /> مدیرکل
                 </div>
                 <div className="text-[10px] font-mono text-zinc-400 mt-0.5">superadmin / superadmin</div>
               </button>

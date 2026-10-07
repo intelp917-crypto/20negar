@@ -8,8 +8,22 @@ import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
 import { videoUpload } from '../middleware/upload.middleware.ts';
 import { PRIVATE_VIDEOS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
 import { AuditService } from '../services/audit.service.ts';
+import { loadSession as loadChunkSession, dataFile as chunkDataFile, cleanupSession as cleanupChunkSession } from './upload.routes.ts';
 
 const router = Router();
+
+/**
+ * فایل آپلودشده با سیستم چانکی موازی را به فایل موقت استاندارد تبدیل می‌کند
+ * تا ادامه پایپ‌لاین ساخت ویدیو بدون تغییر اجرا شود.
+ */
+function resolveChunkedUpload(uploadId: string, userId: number): { tempPath: string; originalName: string; size: number } | null {
+  const session = loadChunkSession(uploadId);
+  if (!session || session.userId !== userId) return null;
+  const src = chunkDataFile(uploadId);
+  if (!fs.existsSync(src)) return null;
+  // فایل نهایی همان فایل چانکی است؛ نیازی به کپی مجدد نیست (storeLocalFile آن را جابه‌جا می‌کند)
+  return { tempPath: src, originalName: session.originalName, size: session.fileSize };
+}
 
 // GET /api/videos/stats - Dashboard statistics scoped per role
 router.get('/stats', authenticate, (req: Request, res: Response): void => {
@@ -98,12 +112,8 @@ router.post(
   requireRole(['Editor']),
   videoUpload.single('video'),
   async (req: Request, res: Response): Promise<void> => {
+    let chunkTempPath: string | null = null;
     try {
-      if (!req.file) {
-        res.status(400).json({ error: 'هیچ فایل ویدیویی ارسال نشده است.' });
-        return;
-      }
-
       const { title, supervisorId } = req.body;
       if (!title || !title.trim()) {
         res.status(400).json({ error: 'عنوان پروژه ویدیویی الزامی است.' });
@@ -115,17 +125,42 @@ router.post(
         return;
       }
 
-      const targetFileName = `orig_${Date.now()}_${path.basename(req.file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      let tempPath: string;
+      let originalName: string;
+      let fileSize: number;
+
+      if (req.body.uploadId) {
+        // مسیر جدید: آپلود چانکی موازی (فیچر ۳)
+        const assembled = resolveChunkedUpload(String(req.body.uploadId), req.user!.id);
+        if (!assembled) {
+          res.status(400).json({ error: 'نشست آپلود چانکی یافت نشد یا ناقص است؛ لطفاً دوباره تلاش کنید.' });
+          return;
+        }
+        tempPath = assembled.tempPath;
+        originalName = assembled.originalName;
+        fileSize = assembled.size;
+        chunkTempPath = assembled.tempPath;
+      } else if (req.file) {
+        tempPath = req.file.path;
+        originalName = req.file.originalname;
+        fileSize = req.file.size;
+      } else {
+        res.status(400).json({ error: 'هیچ فایل ویدیویی ارسال نشده است.' });
+        return;
+      }
+
+      const targetFileName = `orig_${Date.now()}_${path.basename(originalName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       const destinationKey = `videos/${targetFileName}`;
 
       // Move uploaded file from temp to private storage
-      await fileStorage.storeLocalFile(req.file.path, destinationKey);
+      await fileStorage.storeLocalFile(tempPath, destinationKey);
+      if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
 
       const created = VideoService.createVideo({
         title: title.trim(),
-        originalFilename: req.file.originalname,
+        originalFilename: originalName,
         originalPath: destinationKey,
-        fileSize: req.file.size,
+        fileSize,
         editorId: req.user!.id,
         supervisorId: parseInt(supervisorId, 10),
         ipAddress: req.ip,
@@ -134,6 +169,11 @@ router.post(
       res.status(201).json(created);
     } catch (err: any) {
       console.error('[VideoRoutes] Upload error:', err);
+      if (chunkTempPath && fs.existsSync(chunkTempPath)) {
+        try {
+          fs.unlinkSync(chunkTempPath);
+        } catch {}
+      }
       if (req.file && fs.existsSync(req.file.path)) {
         try {
           fs.unlinkSync(req.file.path);
@@ -151,6 +191,7 @@ router.post(
   requireRole(['Editor']),
   videoUpload.single('video'),
   async (req: Request, res: Response): Promise<void> => {
+    let chunkTempPath: string | null = null;
     try {
       const parentId = parseInt(req.params.id, 10);
       const parentVideo = VideoService.getVideoById(parentId, req.user!);
@@ -159,24 +200,43 @@ router.post(
         return;
       }
 
-      if (!req.file) {
+      let tempPath: string;
+      let originalName: string;
+      let fileSize: number;
+
+      if (req.body.uploadId) {
+        const assembled = resolveChunkedUpload(String(req.body.uploadId), req.user!.id);
+        if (!assembled) {
+          res.status(400).json({ error: 'نشست آپلود چانکی یافت نشد یا ناقص است؛ لطفاً دوباره تلاش کنید.' });
+          return;
+        }
+        tempPath = assembled.tempPath;
+        originalName = assembled.originalName;
+        fileSize = assembled.size;
+        chunkTempPath = assembled.tempPath;
+      } else if (req.file) {
+        tempPath = req.file.path;
+        originalName = req.file.originalname;
+        fileSize = req.file.size;
+      } else {
         res.status(400).json({ error: 'لطفا فایل نسخه جدید را انتخاب کنید.' });
         return;
       }
 
-      const targetFileName = `orig_v${parentVideo.versionNumber + 1}_${Date.now()}_${path.basename(req.file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      const targetFileName = `orig_v${parentVideo.versionNumber + 1}_${Date.now()}_${path.basename(originalName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       const destinationKey = `videos/${targetFileName}`;
 
-      await fileStorage.storeLocalFile(req.file.path, destinationKey);
+      await fileStorage.storeLocalFile(tempPath, destinationKey);
+      if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
 
       const title = req.body.title?.trim() || `${parentVideo.title} (نسخه ${parentVideo.versionNumber + 1})`;
       const supervisorId = req.body.supervisorId ? parseInt(req.body.supervisorId, 10) : parentVideo.supervisorId;
 
       const newVersion = VideoService.createVideo({
         title,
-        originalFilename: req.file.originalname,
+        originalFilename: originalName,
         originalPath: destinationKey,
-        fileSize: req.file.size,
+        fileSize,
         editorId: req.user!.id,
         supervisorId,
         parentVideoId: parentId,
@@ -187,6 +247,11 @@ router.post(
       res.status(201).json(newVersion);
     } catch (err: any) {
       console.error('[VideoRoutes] Version upload error:', err);
+      if (chunkTempPath && fs.existsSync(chunkTempPath)) {
+        try {
+          fs.unlinkSync(chunkTempPath);
+        } catch {}
+      }
       if (req.file && fs.existsSync(req.file.path)) {
         try {
           fs.unlinkSync(req.file.path);
@@ -272,6 +337,29 @@ router.post('/:id/assign-supervisor', authenticate, requireRole(['Editor', 'Admi
     res.json(updated);
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'خطا در انتساب ناظر کیفی.' });
+  }
+});
+
+// POST /api/videos/:id/assign-admin - SuperAdmin only (انتخاب ادمین مقصد ویدیو پس از تایید ناظر)
+router.post('/:id/assign-admin', authenticate, requireRole(['SuperAdmin']), (req: Request, res: Response): void => {
+  try {
+    const videoId = parseInt(req.params.id, 10);
+    const raw = req.body.adminId;
+    const adminId = raw === null || raw === undefined || raw === '' ? null : parseInt(raw, 10);
+    if (adminId !== null && Number.isNaN(adminId)) {
+      res.status(400).json({ error: 'شناسه ادمین نامعتبر است.' });
+      return;
+    }
+
+    const updated = VideoService.assignAdmin(videoId, adminId, {
+      id: req.user!.id,
+      role: req.user!.role,
+      displayName: req.user!.displayName,
+      ipAddress: req.ip,
+    });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'خطا در انتساب ادمین.' });
   }
 });
 

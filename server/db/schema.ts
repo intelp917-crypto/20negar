@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS videos (
   thumbnail_path TEXT,
   editor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   supervisor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   status TEXT NOT NULL CHECK(status IN ('Uploaded', 'PendingReview', 'Approved', 'Rejected')) DEFAULT 'Uploaded',
   processing_status TEXT NOT NULL CHECK(processing_status IN ('Uploading', 'Processing', 'Ready', 'ProcessingFailed')) DEFAULT 'Processing',
   duration REAL DEFAULT 0,
@@ -93,6 +94,7 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
 -- High-performance compound indexes for large-scale video library
 CREATE INDEX IF NOT EXISTS idx_videos_editor_status ON videos(editor_id, status);
 CREATE INDEX IF NOT EXISTS idx_videos_supervisor_status ON videos(supervisor_id, status);
+CREATE INDEX IF NOT EXISTS idx_videos_admin_status ON videos(admin_id, status);
 CREATE INDEX IF NOT EXISTS idx_videos_status_created ON videos(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_videos_created ON videos(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_video_qualities_comp ON video_qualities(video_id, quality);
@@ -129,6 +131,19 @@ export function runMigrations(): void {
     }
   } catch (err) {
     console.warn('[Migration] Notice on schema check:', err);
+  }
+
+  // Migration: videos.admin_id (انتساب ویدیو به ادمین مشخص)
+  try {
+    db.query('SELECT admin_id FROM videos LIMIT 1');
+  } catch {
+    try {
+      console.log('[Migration] Adding videos.admin_id column for admin assignment...');
+      db.exec('ALTER TABLE videos ADD COLUMN admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+      console.log('[Migration] videos.admin_id column added successfully.');
+    } catch (err) {
+      console.warn('[Migration] Could not add videos.admin_id:', err);
+    }
   }
 
   db.exec(SCHEMA_SQL);

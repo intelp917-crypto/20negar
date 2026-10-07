@@ -68,6 +68,20 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const [videoSearch, setVideoSearch] = useState('');
   const [videoStatusFilter, setVideoStatusFilter] = useState('all');
 
+  // Self-update from GitHub repo (فیچر ۲)
+  const [updateStatus, setUpdateStatus] = useState<{
+    repo: string;
+    gitAvailable: boolean;
+    isRepo: boolean;
+    localSha: string | null;
+    remoteSha: string | null;
+    upToDate: boolean | null;
+    tokenConfigured: boolean;
+    message: string;
+  } | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+
   const fetchData = async () => {
     setIsLoading(true);
     try {
@@ -88,7 +102,29 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
   useEffect(() => {
     fetchData();
+    api.getUpdateStatus().then(setUpdateStatus).catch((err) => console.error('Update status failed:', err));
   }, []);
+
+  const handleForceUpdate = async () => {
+    if (isUpdating) return;
+    if (!window.confirm('بروزرسانی اجباری از ریپوزیتوری گیت‌هاب انجام شود؟ در صورت وجود نسخه جدید، سرور ری‌استارت می‌شود و چند لحظه از دسترس خارج است.')) return;
+    setIsUpdating(true);
+    setUpdateMessage(null);
+    try {
+      const result = await api.forceUpdate();
+      setUpdateMessage(result.message);
+      if (result.restarting) {
+        // سرور دارد ری‌استارت می‌شود؛ بعد از چند ثانیه وضعیت را دوباره بگیر
+        setTimeout(() => window.location.reload(), 6000);
+      } else {
+        api.getUpdateStatus().then(setUpdateStatus).catch(() => {});
+      }
+    } catch (err: any) {
+      setUpdateMessage(err.message || 'خطا در بروزرسانی وب‌اپ.');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -171,6 +207,17 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     }
   };
 
+  const adminUsers = users.filter((u) => u.role === 'Admin' && u.isActive);
+
+  const handleAssignAdmin = async (video: Video, adminId: number) => {
+    try {
+      const updated = await api.assignAdmin(video.id, adminId > 0 ? adminId : null);
+      setVideos((prev) => prev.map((v) => (v.id === updated.id ? updated : v)));
+    } catch (err: any) {
+      alert(err.message || 'خطا در انتساب ادمین.');
+    }
+  };
+
   const formatFileSize = (bytes: number) => {
     if (!bytes) return '0 MB';
     const mb = bytes / (1024 * 1024);
@@ -208,7 +255,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
         return (
           <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
             <Crown className="w-3 h-3 text-amber-400" />
-            مدیرکل (دسترسی همه چی)
+            مدیرکل
           </span>
         );
       case 'Editor':
@@ -243,7 +290,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           </div>
           <div>
             <h1 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
-              <span>پنل مدیرکل (دسترسی همه چی)</span>
+              <span>پنل مدیرکل</span>
             </h1>
             <p className="text-xs sm:text-sm text-zinc-300 mt-1">
               کنترل جامع حساب‌های کاربری، رمزهای عبور، نقش‌ها، تمامی ویدیوها، بازبینی و منابع دیسک سرور.
@@ -450,6 +497,27 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   onQuickReview={(vid) => setReviewState({ video: vid, mode: 'approve' })}
                 />
 
+                {/* Admin Destination Assignment - فقط مدیرکل */}
+                <div className="mt-2 p-2.5 rounded-xl bg-zinc-950 border border-purple-500/30 flex items-center justify-between gap-2 text-xs">
+                  <span className="text-zinc-400 shrink-0 flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-purple-400" />
+                    ادمین مقصد:
+                  </span>
+                  <select
+                    value={v.adminId ?? 0}
+                    onChange={(e) => handleAssignAdmin(v, Number(e.target.value))}
+                    className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1 text-zinc-200 text-xs focus:outline-none focus:border-purple-500 min-w-0 flex-1"
+                    title="ویدیو فقط در پنل ادمین انتخابی نمایش داده می‌شود"
+                  >
+                    <option value={0}>بدون ادمین (فقط مدیرکل)</option>
+                    {adminUsers.map((ad) => (
+                      <option key={ad.id} value={ad.id}>
+                        {ad.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 {/* SuperAdmin Direct Control Buttons */}
                 <div className="mt-2 p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-between gap-2 text-xs">
                   <div className="flex items-center gap-1.5">
@@ -541,6 +609,54 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
               </div>
             </div>
           </div>
+
+          {/* بروزرسانی وب‌اپ از ریپوزیتوری (فیچر ۲) */}
+          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="w-5 h-5 text-emerald-400" />
+                <h4 className="font-semibold text-zinc-100 text-sm">بروزرسانی وب‌اپ از ریپوزیتوری گیت‌هاب</h4>
+              </div>
+              <button
+                onClick={handleForceUpdate}
+                disabled={isUpdating || !updateStatus?.gitAvailable}
+                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold shadow-md shadow-emerald-950/50 flex items-center gap-2 transition-all"
+              >
+                <RefreshCw className={`w-4 h-4 ${isUpdating ? 'animate-spin' : ''}`} />
+                <span>{isUpdating ? 'در حال بروزرسانی...' : 'بروزرسانی اجباری'}</span>
+              </button>
+            </div>
+
+            {updateStatus && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
+                  <span className="text-zinc-500">ریپوزیتوری:</span>{' '}
+                  <a href={updateStatus.repo} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline font-mono text-[11px]">
+                    {updateStatus.repo}
+                  </a>
+                </div>
+                <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
+                  <span className="text-zinc-500">وضعیت:</span>{' '}
+                  <strong className={updateStatus.upToDate ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                    {updateStatus.message}
+                  </strong>
+                </div>
+                {updateStatus.localSha && updateStatus.remoteSha && (
+                  <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 sm:col-span-2 font-mono text-[11px] text-zinc-500 break-all">
+                    نسخه محلی: <span className="text-zinc-300">{updateStatus.localSha.slice(0, 12)}</span>
+                    {'  •  '}نسخه ریموت: <span className="text-zinc-300">{updateStatus.remoteSha.slice(0, 12)}</span>
+                    {'  •  '}حالت: آپدیت خودکار هنگام راه‌اندازی سرور {updateStatus.gitAvailable ? 'فعال' : 'غیرفعال (git یافت نشد)'}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {updateMessage && (
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
+                {updateMessage}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -596,7 +712,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   onChange={(e) => setNewRole(e.target.value as UserRole)}
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-purple-500"
                 >
-                  <option value="SuperAdmin">مدیرکل (دسترسی همه چی)</option>
+                  <option value="SuperAdmin">مدیرکل</option>
                   <option value="Editor">تدوین‌گر</option>
                   <option value="Supervisor">ناظر کیفی</option>
                   <option value="Admin">ادمین</option>
@@ -694,7 +810,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   onChange={(e) => setEditRole(e.target.value as UserRole)}
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-purple-500"
                 >
-                  <option value="SuperAdmin">مدیرکل (دسترسی همه چی)</option>
+                  <option value="SuperAdmin">مدیرکل</option>
                   <option value="Editor">تدوین‌گر</option>
                   <option value="Supervisor">ناظر کیفی</option>
                   <option value="Admin">ادمین</option>

@@ -62,6 +62,9 @@ export interface Video {
   supervisorId: number;
   supervisorName: string;
   supervisorUsername: string;
+  adminId: number | null;
+  adminName: string | null;
+  adminUsername: string | null;
   status: VideoStatus;
   processingStatus: ProcessingStatus;
   duration: number;

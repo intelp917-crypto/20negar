@@ -22,7 +22,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+  if (!(options.body instanceof FormData) && typeof options.body === 'string' && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -45,6 +45,112 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   return response.json();
 }
 
+const CHUNK_CONCURRENCY = 6; // تعداد چانک‌های همزمان ( موازی‌سازی = سرعت بسیار بالاتر )
+const CHUNK_RETRY = 3;
+
+async function authedFetch(url: string, init: RequestInit): Promise<Response> {
+  const headers = new Headers(init.headers || {});
+  const token = getStoredToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(url, { ...init, headers });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * آپلود چانکی موازی: فایل به تکه‌های ۴ مگابایتی تقسیم و ۶ تا همزمان ارسال می‌شود.
+ * با قطعی اینترنت از همان‌جا که مانده ادامه می‌دهد (Resume) و هر چانک جداگانه retry می‌شود.
+ */
+async function chunkedUpload(
+  file: File,
+  fields: Record<string, string>,
+  onProgress?: (percent: number) => void
+): Promise<string> {
+  const createRes = await authedFetch('/api/chunked-uploads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type || 'video/mp4',
+    }),
+  });
+  if (!createRes.ok) {
+    const err = await createRes.json().catch(() => ({}));
+    throw new Error(err.error || 'خطا در شروع آپلود.');
+  }
+  const session = await createRes.json();
+  const uploadId: string = session.uploadId;
+  const chunkSize: number = session.chunkSize;
+  const totalChunks: number = session.totalChunks;
+  const received: number[] = Array.isArray(session.received) ? session.received : [];
+
+  const pending: number[] = [];
+  for (let i = 0; i < totalChunks; i++) {
+    if (!received.includes(i)) pending.push(i);
+  }
+
+  let doneCount = totalChunks - pending.length;
+  const metaHeader = btoa(unescape(encodeURIComponent(JSON.stringify(fields))));
+
+  const report = () => {
+    if (onProgress) onProgress(Math.min(99, Math.round((doneCount / totalChunks) * 100)));
+  };
+  report();
+
+  const sendChunk = async (index: number): Promise<void> => {
+    const start = index * chunkSize;
+    const blob = file.slice(start, Math.min(start + chunkSize, file.size));
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= CHUNK_RETRY; attempt++) {
+      try {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/octet-stream',
+          'X-Upload-Meta': metaHeader,
+        };
+        const res = await authedFetch(`/api/chunked-uploads/${uploadId}/chunk/${index}`, {
+          method: 'PUT',
+          headers,
+          body: blob,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `چانک ${index} رد شد (کد ${res.status}).`);
+        }
+        doneCount++;
+        report();
+        return;
+      } catch (err: any) {
+        lastError = err;
+        if (attempt < CHUNK_RETRY) await sleep(500 * attempt); // backoff
+      }
+    }
+    throw lastError || new Error(`ارسال چانک ${index} ناموفق بود.`);
+  };
+
+  // صف موازی با N worker همزمان
+  const queue = [...pending];
+  const workers = Array.from({ length: Math.min(CHUNK_CONCURRENCY, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const index = queue.shift();
+      if (index === undefined) break;
+      await sendChunk(index);
+    }
+  });
+  await Promise.all(workers);
+
+  // تکمیل نشست
+  const completeRes = await authedFetch(`/api/chunked-uploads/${uploadId}/complete`, { method: 'POST' });
+  if (!completeRes.ok) {
+    const err = await completeRes.json().catch(() => ({}));
+    throw new Error(err.error || 'تکمیل آپلود ناموفق بود.');
+  }
+  if (onProgress) onProgress(100);
+  return uploadId;
+}
+
 export const api = {
   // Auth
   login: (credentials: { username: string; password: string }) =>
@@ -63,6 +169,7 @@ export const api = {
   // Users
   getEditors: () => request<User[]>('/api/editors'),
   getSupervisors: () => request<User[]>('/api/supervisors'),
+  getAdmins: () => request<User[]>('/api/admins'),
   getAllUsers: () => request<User[]>('/api/users'),
 
   // SuperAdmin User Management
@@ -124,86 +231,39 @@ export const api = {
 
   getAdminStats: () => request<AdminStats>('/api/videos/stats'),
 
+  // ---- آپلود چانکی موازی (فیچر ۳: آپلود فوق‌سریع، مقاوم در برابر قطعی) ----
   uploadVideo: (formData: FormData, onProgress?: (percent: number) => void) => {
-    return new Promise<Video>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/videos');
-
-      const token = getStoredToken();
-      if (token) {
-        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-      }
-
-      if (onProgress && xhr.upload) {
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percent = Math.round((event.loaded / event.total) * 100);
-            onProgress(percent);
-          }
-        };
-      }
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            resolve(JSON.parse(xhr.responseText));
-          } catch {
-            reject(new Error('پاسخ نامعتبر از سرور'));
-          }
-        } else {
-          try {
-            const err = JSON.parse(xhr.responseText);
-            reject(new Error(err.error || `بارگذاری با خطای ${xhr.status} متوقف شد.`));
-          } catch {
-            reject(new Error(`بارگذاری با خطای ${xhr.status} متوقف شد.`));
-          }
-        }
-      };
-
-      xhr.onerror = () => reject(new Error('خطای ارتباط شبکه در حین بارگذاری فایل.'));
-      xhr.send(formData);
+    const file = formData.get('video');
+    if (!(file instanceof File)) {
+      return Promise.reject(new Error('فایل ویدیو یافت نشد.'));
+    }
+    const fields: Record<string, string> = {};
+    formData.forEach((value, key) => {
+      if (typeof value === 'string') fields[key] = value;
     });
+    return chunkedUpload(file, fields, onProgress).then((uploadId) =>
+      request<Video>('/api/videos', {
+        method: 'POST',
+        body: JSON.stringify({ uploadId, ...fields }),
+      })
+    );
   },
 
   uploadNewVersion: (videoId: number, formData: FormData, onProgress?: (percent: number) => void) => {
-    return new Promise<Video>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `/api/videos/${videoId}/versions`);
-
-      const token = getStoredToken();
-      if (token) {
-        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-      }
-
-      if (onProgress && xhr.upload) {
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percent = Math.round((event.loaded / event.total) * 100);
-            onProgress(percent);
-          }
-        };
-      }
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            resolve(JSON.parse(xhr.responseText));
-          } catch {
-            reject(new Error('پاسخ نامعتبر از سرور'));
-          }
-        } else {
-          try {
-            const err = JSON.parse(xhr.responseText);
-            reject(new Error(err.error || `بارگذاری نسخه جدید با خطای ${xhr.status} متوقف شد.`));
-          } catch {
-            reject(new Error(`بارگذاری نسخه جدید با خطای ${xhr.status} متوقف شد.`));
-          }
-        }
-      };
-
-      xhr.onerror = () => reject(new Error('خطای شبکه در حین ارسال نسخه جدید.'));
-      xhr.send(formData);
+    const file = formData.get('video');
+    if (!(file instanceof File)) {
+      return Promise.reject(new Error('فایل ویدیو یافت نشد.'));
+    }
+    const fields: Record<string, string> = {};
+    formData.forEach((value, key) => {
+      if (typeof value === 'string') fields[key] = value;
     });
+    return chunkedUpload(file, fields, onProgress).then((uploadId) =>
+      request<Video>(`/api/videos/${videoId}/versions`, {
+        method: 'POST',
+        body: JSON.stringify({ uploadId, ...fields }),
+      })
+    );
   },
 
   approveVideo: (videoId: number, comment?: string) =>
@@ -228,6 +288,12 @@ export const api = {
     request<Video>(`/api/videos/${videoId}/assign-supervisor`, {
       method: 'POST',
       body: JSON.stringify({ supervisorId }),
+    }),
+
+  assignAdmin: (videoId: number, adminId: number | null) =>
+    request<Video>(`/api/videos/${videoId}/assign-admin`, {
+      method: 'POST',
+      body: JSON.stringify({ adminId }),
     }),
 
   // Notifications
@@ -260,6 +326,18 @@ export const api = {
 
   getTranscodeJobs: () =>
     request<any[]>('/api/system/transcode-jobs'),
+
+  // Self-update from GitHub repo (SuperAdmin)
+  getUpdateStatus: () =>
+    request<{ repo: string; gitAvailable: boolean; isRepo: boolean; localSha: string | null; remoteSha: string | null; upToDate: boolean | null; tokenConfigured: boolean; message: string }>(
+      '/api/system/update-status'
+    ),
+
+  forceUpdate: () =>
+    request<{ success: boolean; changed: boolean; filesChanged: number; npmInstalled: boolean; restarting: boolean; error?: string; message: string }>(
+      '/api/system/update',
+      { method: 'POST' }
+    ),
 
   getExportDbUrl: () => {
     const token = getStoredToken();

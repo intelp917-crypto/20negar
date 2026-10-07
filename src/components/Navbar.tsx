@@ -85,7 +85,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
   const getRoleLabel = (role?: UserRole) => {
     switch (role) {
       case 'SuperAdmin':
-        return 'مدیرکل (دسترسی همه چی)';
+        return 'مدیرکل';
       case 'Editor':
         return 'تدوین‌گر';
       case 'Supervisor':
