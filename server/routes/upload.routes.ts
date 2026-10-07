@@ -23,11 +23,11 @@ import { STORAGE_DIR } from '../config.ts';
 const router = Router();
 
 const CHUNK_DIR = path.resolve(STORAGE_DIR, 'temp', 'chunked');
-const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500 MB
-const DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB
-const MAX_CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB
+const MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024; // 4 GB
+const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB (faster throughput)
+const MAX_CHUNK_SIZE = 32 * 1024 * 1024; // 32 MB
 const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 ساعت
-const VALID_EXTS = ['.mp4', '.mov', '.mkv', '.webm', '.avi'];
+const VALID_EXTS = ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.ts', '.flv', '.wmv'];
 
 if (!fs.existsSync(CHUNK_DIR)) {
   fs.mkdirSync(CHUNK_DIR, { recursive: true });
@@ -98,8 +98,8 @@ function cleanupExpired(): void {
 cleanupExpired();
 setInterval(cleanupExpired, 60 * 60 * 1000).unref?.();
 
-// POST /api/chunked-uploads - ایجاد نشست آپلود (Editor only)
-router.post('/', authenticate, requireRole(['Editor']), (req: Request, res: Response): void => {
+// POST /api/chunked-uploads - ایجاد نشست آپلود
+router.post('/', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
   try {
     const { fileName, fileSize, mimeType, chunkSize } = req.body || {};
     if (!fileName || !String(fileName).trim()) {
@@ -112,7 +112,7 @@ router.post('/', authenticate, requireRole(['Editor']), (req: Request, res: Resp
       return;
     }
     if (size > MAX_FILE_SIZE) {
-      res.status(400).json({ error: 'حجم فایل از سقف مجاز (۵۰۰ مگابایت) بیشتر است.' });
+      res.status(400).json({ error: 'حجم فایل از سقف مجاز (۴ گیگابایت) بیشتر است.' });
       return;
     }
     const ext = path.extname(String(fileName)).toLowerCase();
@@ -155,9 +155,9 @@ router.post('/', authenticate, requireRole(['Editor']), (req: Request, res: Resp
 });
 
 // GET /api/chunked-uploads/:id - وضعیت و رزوم آپلود
-router.get('/:id', authenticate, requireRole(['Editor']), (req: Request, res: Response): void => {
+router.get('/:id', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
   const meta = loadSession(req.params.id);
-  if (!meta || meta.userId !== req.user!.id) {
+  if (!meta || (meta.userId !== req.user!.id && req.user!.role !== 'SuperAdmin')) {
     res.status(404).json({ error: 'نشست آپلود یافت نشد یا منقضی شده است.' });
     return;
   }
@@ -175,12 +175,12 @@ router.get('/:id', authenticate, requireRole(['Editor']), (req: Request, res: Re
 router.put(
   '/:id/chunk/:index',
   authenticate,
-  requireRole(['Editor']),
+  requireRole(['Editor', 'SuperAdmin', 'Admin']),
   express.raw({ type: '*/*', limit: MAX_CHUNK_SIZE + 1024 }),
   (req: Request, res: Response): void => {
     try {
       const meta = loadSession(req.params.id);
-      if (!meta || meta.userId !== req.user!.id) {
+      if (!meta || (meta.userId !== req.user!.id && req.user!.role !== 'SuperAdmin')) {
         res.status(404).json({ error: 'نشست آپلود یافت نشد یا منقضی شده است.' });
         return;
       }
@@ -235,10 +235,9 @@ router.put(
 );
 
 // POST /api/chunked-uploads/:id/complete - تکمیل آپلود؛ فایل آماده است.
-// (ادغام نهایی و ساخت رکورد ویدیو در video.routes انجام می‌شود)
-router.post('/:id/complete', authenticate, requireRole(['Editor']), (req: Request, res: Response): void => {
+router.post('/:id/complete', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
   const meta = loadSession(req.params.id);
-  if (!meta || meta.userId !== req.user!.id) {
+  if (!meta || (meta.userId !== req.user!.id && req.user!.role !== 'SuperAdmin')) {
     res.status(404).json({ error: 'نشست آپلود یافت نشد یا منقضی شده است.' });
     return;
   }

@@ -27,21 +27,24 @@ const allowedMimeTypes = [
   'video/avi',
   'video/x-msvideo',
   'video/mpeg',
-  'application/octet-stream', // Some browsers send octet-stream for .mp4/.mkv
+  'video/x-m4v',
+  'video/3gpp',
+  'video/x-flv',
+  'application/octet-stream',
 ];
 
 export const videoUpload = multer({
   storage,
   limits: {
-    fileSize: 1024 * 1024 * 500, // 500 MB limit
+    fileSize: 4 * 1024 * 1024 * 1024, // 4 GB limit
   },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    const validExts = ['.mp4', '.mov', '.mkv', '.webm', '.avi'];
-    if (allowedMimeTypes.includes(file.mimetype) || validExts.includes(ext)) {
+    const validExts = ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.ts', '.flv', '.wmv'];
+    if (file.mimetype.startsWith('video/') || allowedMimeTypes.includes(file.mimetype) || validExts.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error(`Invalid video format (${file.mimetype}). Supported formats: MP4, MOV, MKV, WebM, AVI`));
+      cb(new Error(`فرمت فایل ویدیویی نامعتبر است (${file.mimetype}). فرمت‌های مجاز: MP4, MOV, MKV, WebM, AVI`));
     }
   },
 });
