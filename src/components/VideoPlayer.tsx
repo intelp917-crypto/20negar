@@ -28,6 +28,21 @@ interface VideoPlayerProps {
   autoPlay?: boolean;
 }
 
+/** نرمال‌سازی مسیرها برای مقایسه (video.src همیشه مطلق است، نه نسبی) */
+const toAbsoluteUrl = (url: string): string => {
+  try {
+    return new URL(url, window.location.href).href;
+  } catch {
+    return url;
+  }
+};
+
+/** آیا منبع فعلی ویدیو همین آدرس است؟ (بدون این مقایسه، پلیر در حلقه بی‌نهایت ۴۰۴ می‌پیچد) */
+const isCurrentSource = (video: HTMLVideoElement, url: string): boolean => {
+  const target = toAbsoluteUrl(url);
+  return video.src === target || video.currentSrc === target;
+};
+
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   videoId,
   title,
@@ -58,8 +73,141 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [controlsVisible, setControlsVisible] = useState<boolean>(true);
   const [bufferedEnd, setBufferedEnd] = useState<number>(0);
   const [estimatedQualityLevel, setEstimatedQualityLevel] = useState<string>('');
+  // کاهش خودکار کیفیت (حالت Auto): وقتی پخش بافر می‌کند و HLS چندسطحی در دسترس نیست
+  const [autoQuality, setAutoQuality] = useState<string | null>(null);
+  const [autoNotice, setAutoNotice] = useState<string | null>(null);
+  const autoQualityRef = useRef<string | null>(null);
+  const stallTimesRef = useRef<number[]>([]);
+  const playbackStartedRef = useRef(false);
+  const sourceErrorsRef = useRef<{ url: string; count: number }>({ url: '', count: 0 });
+  const autoNoticeTimerRef = useRef<number | null>(null);
+  const qualitiesRef = useRef(qualities);
+  qualitiesRef.current = qualities;
 
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const watchdogRef = useRef<number | null>(null);
+  const hlsRetriesRef = useRef(0);
+  const hasSetupRef = useRef(false);
+  const inViewRef = useRef(true);
+  const fallbackRef = useRef<(quality?: string) => void>(() => {});
+
+  const clearWatchdog = useCallback(() => {
+    if (watchdogRef.current) {
+      window.clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+    }
+  }, []);
+
+  /** اگر منبع پخش تا مهلت مقرر آماده نشد، به MP4 مستقیم سوییچ کن (یا خطا نشان بده) */
+  const armWatchdog = useCallback(
+    (seconds = 15) => {
+      clearWatchdog();
+      watchdogRef.current = window.setTimeout(() => {
+        const video = videoRef.current;
+        if (!video) return;
+        if (video.readyState >= 3) return; // در حال پخش است
+        const src = video.currentSrc || video.src || '';
+        if (src.includes('/hls/')) {
+          console.warn('[VideoPlayer] HLS did not become ready in time — falling back to direct MP4.');
+          fallbackRef.current('Original');
+        } else {
+          setHasError(true);
+          setErrorMessage('پخش ویدیو بیش از حد طول کشید؛ اتصال اینترنت خود را بررسی کنید.');
+          setIsBuffering(false);
+        }
+      }, seconds * 1000);
+    },
+    [clearWatchdog]
+  );
+
+  const fallbackToDirectMp4 = useCallback((qualityTarget: string = 'Original') => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    const savedTime = video.currentTime;
+    const wasPlaying = !video.paused && !video.ended;
+    const mp4Url = api.getStreamUrl(videoId, qualityTarget);
+
+    setHasError(false);
+    setErrorMessage(null);
+    setIsBuffering(true);
+
+    if (!isCurrentSource(video, mp4Url)) {
+      const restorePlayback = () => {
+        if (savedTime > 0 && isFinite(savedTime)) {
+          try {
+            video.currentTime = savedTime;
+          } catch {
+            // ignore
+          }
+        }
+        if (wasPlaying) video.play().catch(() => {});
+        video.removeEventListener('loadedmetadata', restorePlayback);
+      };
+      video.addEventListener('loadedmetadata', restorePlayback);
+      video.src = mp4Url;
+      video.load();
+      video.play().catch(() => {});
+    } else {
+      video.play().catch(() => {});
+    }
+    armWatchdog(20);
+  }, [videoId, armWatchdog]);
+  fallbackRef.current = fallbackToDirectMp4;
+
+  /** برچسب فارسی کیفیت‌ها برای پیام‌ها */
+  const qualityLabel = (q: string): string => (q === 'Original' ? 'کیفیت اصلی' : q);
+
+  /** هدف منبع پخش در حالت خودکار (با احتساب کاهش خودکار کیفیت) */
+  const autoTarget = (): string => autoQualityRef.current ?? 'Original';
+
+  /**
+   * کاهش یک پله‌ای کیفیت در حالت خودکار — با تغییر state، setupSource دوباره اجرا
+   * شده و منبع پخش را روی کیفیت پایین‌تر می‌گذارد (موقعیت پخش حفظ می‌شود).
+   * معیار: ارتفاع واقعی ویدیوی در حال پخش (videoHeight) تا همیشه پایین‌تر از فعلی برویم.
+   */
+  const downgradeAutoQuality = useCallback((): boolean => {
+    if (selectedQuality !== 'Auto') return false;
+
+    const video = videoRef.current;
+    const currentHeight = video?.videoHeight || 0;
+    const named = qualitiesRef.current
+      .filter((q) => q.quality !== 'Original')
+      .sort((a, b) => b.height - a.height)
+      .map((q) => ({ name: String(q.quality), height: q.height }));
+
+    let next: string | null = null;
+    const currentTargetHeight = autoQualityRef.current
+      ? named.find((n) => n.name === autoQualityRef.current)?.height || 0
+      : 0;
+    const ceiling = Math.min(
+      currentHeight > 0 ? currentHeight : Number.POSITIVE_INFINITY,
+      currentTargetHeight > 0 ? currentTargetHeight : Number.POSITIVE_INFINITY
+    );
+    if (Number.isFinite(ceiling)) {
+      const lower = named.filter((q) => q.height < ceiling);
+      next = lower.length > 0 ? lower[0].name : null;
+    } else {
+      // ارتفاع نامشخص → از نردبان ایستا پایین برو
+      const ladder = ['Original', ...named.map((n) => n.name)];
+      const idx = ladder.indexOf(autoQualityRef.current ?? 'Original');
+      next = idx >= 0 ? ladder[idx + 1] ?? null : null;
+    }
+
+    if (!next) return false; // به پایین‌ترین کیفیت رسیده‌ایم
+
+    autoQualityRef.current = next;
+    setAutoQuality(next);
+    setAutoNotice(`سرعت پایین است؛ کیفیت به‌صورت خودکار به ${qualityLabel(next)} کاهش یافت.`);
+    if (autoNoticeTimerRef.current) window.clearTimeout(autoNoticeTimerRef.current);
+    autoNoticeTimerRef.current = window.setTimeout(() => setAutoNotice(null), 5000);
+    return true;
+  }, [selectedQuality]);
 
   const availableQualityNames = ['Auto', ...qualities.map((q) => q.quality)];
   const speedOptions = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -75,92 +223,142 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const fallbackToDirectMp4 = useCallback((qualityTarget: string = 'Original') => {
+  const setupSource = useCallback(async () => {
     const video = videoRef.current;
     if (!video) return;
 
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
+    const isFirstSetup = !hasSetupRef.current;
+    hasSetupRef.current = true;
 
-    const mp4Url = api.getStreamUrl(videoId, qualityTarget);
-    if (video.src !== mp4Url) {
-      video.src = mp4Url;
-      video.load();
-      video.play().catch(() => {});
-    }
-    setHasError(false);
-  }, [videoId]);
-
-  const setupSource = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
+    const savedCurrentTime = video.currentTime;
+    const wasPlaying = !video.paused && !video.ended;
 
     setHasError(false);
     setErrorMessage(null);
     setIsBuffering(true);
-
-    const savedCurrentTime = video.currentTime;
-    const wasPlaying = !video.paused;
+    hlsRetriesRef.current = 0;
+    clearWatchdog();
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
 
-    if (selectedQuality === 'Auto') {
-      const hlsUrl = api.getHlsUrl(videoId);
-      if (Hls.isSupported()) {
-        const hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: true,
-          backBufferLength: 90,
-          xhrSetup: (xhr) => {
-            const token = getStoredToken();
-            if (token) {
-              xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-            }
-          },
-        });
-        hlsRef.current = hls;
-        hls.loadSource(hlsUrl);
-        hls.attachMedia(video);
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          hls.currentLevel = -1; // Auto adaptive bitrate mode based on network speed
-          setIsBuffering(false);
-          if (savedCurrentTime > 0) video.currentTime = savedCurrentTime;
-          if (wasPlaying || autoPlay) {
-            video.play().catch(() => {});
-          }
-        });
-
-        hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
-          const level = hls.levels[data.level];
-          if (level) {
-            setEstimatedQualityLevel(`${level.height}p`);
-          }
-        });
-
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (data.fatal) {
-            console.warn('[Hls] Fatal error encountered, smoothly falling back to direct MP4 stream...');
-            fallbackToDirectMp4('Original');
-          }
-        });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = hlsUrl;
-        if (savedCurrentTime > 0) video.currentTime = savedCurrentTime;
-        if (wasPlaying || autoPlay) video.play().catch(() => {});
-      } else {
-        fallbackToDirectMp4('Original');
-      }
-    } else {
-      // Manual Quality Selection
+    if (selectedQuality !== 'Auto') {
+      // انتخاب دستی کیفیت → پخش مستقیم MP4 همان کیفیت
       fallbackToDirectMp4(selectedQuality);
+      return;
     }
-  }, [videoId, selectedQuality, autoPlay, fallbackToDirectMp4]);
+
+    // اگر در حالت خودکار کیفیت قبلاً پایین‌تر آمده، دیگر HLS نچسب — مستقیم همان کیفیت
+    if (autoQuality) {
+      fallbackToDirectMp4(autoQuality);
+      return;
+    }
+
+    const hlsUrl = api.getHlsUrl(videoId);
+
+    // بررسی سریع وجود پلی‌لیست HLS؛ اگر هنوز آماده نیست بلافاصله به MP4 مستقیم برو
+    // (برای ویدیوهای تازه آپلودشده که هنوز ترنسکد نشده‌اند)
+    let hlsAvailable = true;
+    try {
+      const res = await fetch(hlsUrl, { method: 'HEAD', cache: 'no-store' });
+      hlsAvailable = res.ok;
+    } catch {
+      hlsAvailable = true; // مشکل موقت شبکه — بگذار hls.js خودش تلاش کند
+    }
+
+    if (!videoRef.current) return; // کامپوننت در حین بررسی بسته شده
+
+    if (!hlsAvailable) {
+      fallbackToDirectMp4(autoTarget());
+      return;
+    }
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 90,
+        xhrSetup: (xhr) => {
+          const token = getStoredToken();
+          if (token) {
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          }
+        },
+      });
+      hlsRef.current = hls;
+      hls.loadSource(hlsUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        hls.currentLevel = -1; // Auto adaptive bitrate mode based on network speed
+        setIsBuffering(false);
+        if (savedCurrentTime > 0 && isFinite(savedCurrentTime)) {
+          try {
+            video.currentTime = savedCurrentTime;
+          } catch {
+            // ignore
+          }
+        }
+        if (wasPlaying || (isFirstSetup && autoPlay)) {
+          video.play().catch(() => {});
+        }
+      });
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+        const level = hls.levels[data.level];
+        if (level && level.height > 0) {
+          setEstimatedQualityLevel(`${level.height}p`);
+        }
+      });
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (!data.fatal) return;
+
+        const status = (data.response as { code?: number } | undefined)?.code;
+        if (status === 404) {
+          // پلی‌لیست هنوز ساخته نشده → مستقیم MP4
+          fallbackToDirectMp4(autoTarget());
+          return;
+        }
+
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && hlsRetriesRef.current < 1) {
+          hlsRetriesRef.current += 1;
+          console.warn('[Hls] Fatal network error — retrying once before fallback...');
+          hls.startLoad();
+          return;
+        }
+
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && hlsRetriesRef.current < 2) {
+          hlsRetriesRef.current += 1;
+          console.warn('[Hls] Fatal media error — attempting recovery...');
+          hls.recoverMediaError();
+          return;
+        }
+
+        console.warn('[Hls] Fatal error encountered, smoothly falling back to direct MP4 stream...');
+        fallbackToDirectMp4(autoTarget());
+      });
+
+      armWatchdog(15);
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = hlsUrl;
+      if (savedCurrentTime > 0 && isFinite(savedCurrentTime)) {
+        try {
+          video.currentTime = savedCurrentTime;
+        } catch {
+          // ignore
+        }
+      }
+      if (wasPlaying || (isFirstSetup && autoPlay)) {
+        video.play().catch(() => {});
+      }
+      armWatchdog(15);
+    } else {
+      fallbackToDirectMp4(autoTarget());
+    }
+  }, [videoId, selectedQuality, autoQuality, autoPlay, fallbackToDirectMp4, clearWatchdog, armWatchdog]);
 
   useEffect(() => {
     setupSource();
@@ -169,23 +367,65 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      clearWatchdog();
     };
-  }, [setupSource]);
+  }, [setupSource, clearWatchdog]);
+
+  // فقط وقتی پلیر در دید بیننده است کلیدهای میان‌بر را جواب بده تا صفحه را قفل نکند
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        inViewRef.current = entries[0]?.isIntersecting ?? true;
+      },
+      { threshold: 0.35 }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  // با تعویض ویدیو، کاهش خودکار کیفیت و شمارنده بافرها صفر می‌شود
+  useEffect(() => {
+    autoQualityRef.current = null;
+    stallTimesRef.current = [];
+    playbackStartedRef.current = false;
+    sourceErrorsRef.current = { url: '', count: 0 };
+    setAutoQuality(null);
+    setAutoNotice(null);
+    return () => {
+      if (autoNoticeTimerRef.current) window.clearTimeout(autoNoticeTimerRef.current);
+    };
+  }, [videoId]);
 
   const handleVideoError = () => {
     const video = videoRef.current;
     if (!video) return;
 
-    console.warn('[VideoPlayer] Video element reported error. Falling back to direct stream...');
-    // If we haven't tried direct MP4 yet, try it now
-    const directUrl = api.getStreamUrl(videoId, 'Original');
-    if (video.src !== directUrl) {
-      fallbackToDirectMp4('Original');
+    // شمارش خطاها برای هر آدرس تا از حلقه بی‌نهایت تلاش مجدد جلوگیری شود
+    const failedUrl = video.currentSrc || video.src || '';
+    const stats = sourceErrorsRef.current;
+    if (stats.url === failedUrl) {
+      stats.count += 1;
     } else {
-      setHasError(true);
-      setErrorMessage('فایل ویدیو موقتا در دسترس نیست یا در حال پردازش اولیه است.');
-      setIsBuffering(false);
+      stats.url = failedUrl;
+      stats.count = 1;
     }
+
+    const target = api.getStreamUrl(videoId, autoTarget());
+    const alreadyDirect = isCurrentSource(video, target);
+
+    if (!alreadyDirect && stats.count < 2) {
+      console.warn('[VideoPlayer] Video element reported error. Falling back to direct MP4 stream...');
+      fallbackToDirectMp4(autoTarget());
+      return;
+    }
+
+    // همین منبع قبلاً هم خطا داده → دیگر تکرار نکن و پیام خطا نشان بده
+    console.warn('[VideoPlayer] Direct stream failed as well — showing error state.');
+    setHasError(true);
+    setErrorMessage('فایل ویدیو موقتا در دسترس نیست یا در حال پردازش اولیه است.');
+    setIsBuffering(false);
   };
 
   const handleMouseMove = () => {
@@ -406,6 +646,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   const handleQualitySelect = (quality: string) => {
+    // انتخاب دستی → کاهش خودکار کیفیت صفر می‌شود
+    autoQualityRef.current = null;
+    setAutoQuality(null);
+    stallTimesRef.current = [];
     setSelectedQuality(quality);
     setShowQualityMenu(false);
   };
@@ -417,6 +661,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!inViewRef.current) return;
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
 
       if (e.key === ' ' || e.key === 'k') {
@@ -491,10 +736,34 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const getQualityButtonLabel = () => {
     if (selectedQuality === 'Auto') {
+      if (autoQuality) return `خودکار (${qualityLabel(autoQuality)})`;
       return estimatedQualityLevel ? `خودکار (${estimatedQualityLevel})` : 'خودکار (هوشمند)';
     }
     if (selectedQuality === 'Original') return 'کیفیت اصلی';
     return selectedQuality;
+  };
+
+  /**
+   * بافر شدن پشت‌سرهم در حالت خودکار → کاهش خودکار کیفیت.
+   * اگر HLS چندسطحی (نردبان کیفیت) فعال باشد، خود hls.js کیفیت را تطبیق می‌دهد
+   * و اینجا فقط برای حالت تک‌کیفیت/پخش مستقیم وارد عمل می‌شویم.
+   */
+  const handleWaiting = (): void => {
+    setIsBuffering(true);
+    if (selectedQuality !== 'Auto') return;
+    if ((hlsRef.current?.levels?.length ?? 0) > 1) return; // ABR خودِ hls.js
+    const video = videoRef.current;
+    if (!video || !playbackStartedRef.current || video.currentTime < 1) return;
+
+    const now = Date.now();
+    const recent = stallTimesRef.current.filter((t) => now - t < 30000);
+    recent.push(now);
+    stallTimesRef.current = recent;
+
+    if (recent.length >= 2) {
+      stallTimesRef.current = [];
+      downgradeAutoQuality();
+    }
   };
 
   return (
@@ -518,8 +787,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           if (videoRef.current) setDuration(videoRef.current.duration);
           setIsBuffering(false);
         }}
-        onCanPlay={() => setIsBuffering(false)}
-        onWaiting={() => setIsBuffering(true)}
+        onCanPlay={() => {
+          setIsBuffering(false);
+          clearWatchdog();
+        }}
+        onWaiting={handleWaiting}
+        onPlaying={() => {
+          playbackStartedRef.current = true;
+          setIsBuffering(false);
+          clearWatchdog();
+        }}
         onError={handleVideoError}
         onPlay={() => {
           setIsPlaying(true);
@@ -539,6 +816,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
+      {/* اعلان کاهش خودکار کیفیت */}
+      {autoNotice && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 pointer-events-none" dir="rtl">
+          <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-500/15 border border-amber-400/40 backdrop-blur-md shadow-lg">
+            <Zap className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+            <span className="text-[11px] font-semibold text-amber-100">{autoNotice}</span>
+          </div>
+        </div>
+      )}
+
       {/* Error Overlay */}
       {hasError && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/90 p-4 text-center z-30" dir="rtl">
@@ -546,7 +833,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           <h4 className="text-sm font-bold text-zinc-100">خطا در بارگذاری ویدیو</h4>
           <p className="text-xs text-zinc-400 mt-1 max-w-sm">{errorMessage}</p>
           <button
-            onClick={() => fallbackToDirectMp4('Original')}
+            onClick={() => fallbackToDirectMp4(autoTarget())}
             className="mt-3 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg"
           >
             <ReloadIcon className="w-3.5 h-3.5" />
@@ -780,7 +1067,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               )}
             </div>
 
-            {document.pictureInPictureEnabled && (
+            {typeof document !== 'undefined' && document.pictureInPictureEnabled && (
               <button
                 onClick={togglePictureInPicture}
                 className="p-1.5 hover:text-purple-400 transition-colors rounded-lg hover:bg-white/10 hidden sm:block"

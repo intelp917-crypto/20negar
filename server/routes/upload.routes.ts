@@ -27,7 +27,7 @@ const MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024; // 4 GB
 const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB (faster throughput)
 const MAX_CHUNK_SIZE = 32 * 1024 * 1024; // 32 MB
 const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 ساعت
-const VALID_EXTS = ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.ts', '.flv', '.wmv'];
+// همه فرمت‌های ویدیویی پذیرفته می‌شوند (تبدیل نهایی را FFmpeg انجام می‌دهد)
 
 if (!fs.existsSync(CHUNK_DIR)) {
   fs.mkdirSync(CHUNK_DIR, { recursive: true });
@@ -75,6 +75,60 @@ function saveSession(meta: SessionMeta): void {
   fs.writeFileSync(metaFile(meta.id), JSON.stringify(meta));
 }
 
+/**
+ * ساخت نشست آپلود از یک فایل کامل و آماده (مثلاً خروجی آپلود TUS)
+ * تا ادامه پایپ‌لاین ساخت ویدیو (POST /api/videos با uploadId) بدون تغییر کار کند.
+ * شناسه به همان فرمت ۳۲ کاراکتری هگز ساخته می‌شود.
+ */
+export function createSessionFromCompletedFile(opts: {
+  userId: number;
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+  sourcePath: string;
+  meta?: Record<string, string>;
+  /** در صورت ارائه، از همین شناسه به‌عنوان شناسه نشست استفاده می‌شود (فرمت ۳۲ کاراکتری هگز) */
+  id?: string;
+}): string | null {
+  try {
+    if (!opts.userId || opts.fileSize <= 0) return null;
+    if (!fs.existsSync(opts.sourcePath)) return null;
+    const stat = fs.statSync(opts.sourcePath);
+    if (stat.size !== opts.fileSize) return null; // فایل ناقص است
+
+    const id = opts.id && /^[a-f0-9]{32}$/.test(opts.id) ? opts.id : crypto.randomBytes(16).toString('hex');
+    const dest = dataFile(id);
+    if (fs.existsSync(dest)) return null; // جلوگیری از بازنویسی نشست موجود
+    try {
+      fs.renameSync(opts.sourcePath, dest);
+    } catch {
+      // در صورت نبود امکان rename (_volume متفاوت) کپی می‌کنیم
+      fs.copyFileSync(opts.sourcePath, dest);
+      try {
+        fs.unlinkSync(opts.sourcePath);
+      } catch {}
+    }
+
+    const session: SessionMeta = {
+      id,
+      userId: opts.userId,
+      originalName: opts.originalName,
+      mimeType: opts.mimeType,
+      fileSize: opts.fileSize,
+      chunkSize: opts.fileSize,
+      totalChunks: 1,
+      received: [0],
+      createdAt: Date.now(),
+      meta: opts.meta || {},
+    };
+    fs.writeFileSync(metaFile(id), JSON.stringify(session));
+    return id;
+  } catch (err) {
+    console.error('[Upload] createSessionFromCompletedFile failed:', err);
+    return null;
+  }
+}
+
 export function cleanupSession(id: string): void {
   for (const f of [metaFile(id), dataFile(id)]) {
     try {
@@ -116,8 +170,8 @@ router.post('/', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']), (
       return;
     }
     const ext = path.extname(String(fileName)).toLowerCase();
-    if (!VALID_EXTS.includes(ext)) {
-      res.status(400).json({ error: `فرمت فایل (${ext}) پشتیبانی نمی‌شود. فرمت‌های مجاز: MP4, MOV, MKV, WebM, AVI` });
+    if (!ext) {
+      res.status(400).json({ error: 'نام فایل باید پسوند داشته باشد (مثلاً mp4).' });
       return;
     }
 

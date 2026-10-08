@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import path from 'path';
+import { FFMPEG_PATH, FFPROBE_PATH } from './ffmpeg.ts';
 import fs from 'fs';
 import { db } from '../db/database.ts';
 import { fileStorage } from '../storage/local.storage.ts';
@@ -188,30 +189,32 @@ export class TranscoderService {
     }
 
     // 2. Generate Thumbnail
+    const stillHere = () => Boolean(db.queryOne<{ id: number }>(`SELECT id FROM videos WHERE id = ?`, [videoId]));
+    if (!stillHere()) throw new Error(`VIDEODELETED: ویدیو حذف شده پس از اتمام در حال پردازش است.`);
+
     updateJob('Generating high-resolution thumbnail', 15);
     const thumbFilename = `thumb_v${videoId}_${Date.now()}.jpg`;
     const thumbFullPath = path.join(PRIVATE_THUMBNAILS_DIR, thumbFilename);
     const thumbKey = `thumbnails/${thumbFilename}`;
 
     try {
-      // Seek to 10% of duration or 1s
-      const seekSec = Math.min(Math.max(1, meta.duration * 0.1), 5).toFixed(2);
+      // فریم اول ویدیو (بدون seek زمانی) به‌عنوان تصویر بندانگشتی
       await this.runFfmpeg([
         '-y',
-        '-ss', seekSec,
         '-i', originalFullPath,
         '-frames:v', '1',
         '-q:v', '2',
-        '-vf', 'scale=640:-1',
+        '-vf', 'scale=640:-2',
         thumbFullPath,
       ]);
       details.thumbnail = 'completed';
       db.run(`UPDATE videos SET thumbnail_path = ? WHERE id = ?`, [thumbKey, videoId]);
     } catch (thumbErr) {
-      console.warn('[Transcoder] Thumbnail extraction error, trying fallback at 0s:', thumbErr);
+      console.warn('[Transcoder] Thumbnail extraction error, trying fallback with fast seek:', thumbErr);
       try {
         await this.runFfmpeg([
           '-y',
+          '-ss', '0',
           '-i', originalFullPath,
           '-frames:v', '1',
           '-q:v', '2',
@@ -225,6 +228,8 @@ export class TranscoderService {
     }
 
     // 3. Multi-resolution Transcoding
+    if (!stillHere()) throw new Error(`VIDEODELETED: ویدیو حذف شده پس از اتمام در حال پردازش است.`);
+
     const targetsToProcess = QUALITY_PRESETS.filter((p) => {
       // Only transcode down or matching original height + reasonable buffer
       return p.height <= meta.height * 1.05 || p.name === '360p' || p.name === '480p';
@@ -287,40 +292,92 @@ export class TranscoderService {
       updateJob(`Completed ${target.name} rendition`, currentProgress);
     }
 
-    // Mark any skipped resolutions
-    for (const preset of QUALITY_PRESETS) {
-      if (!details[preset.name]) {
-        details[preset.name] = 'skipped';
-      }
-    }
+    // 4. Generate HLS Adaptive Streaming — نردبان چندکیفیتی (Multi-Variant)
+    if (!stillHere()) throw new Error(`VIDEODELETED: ویدیو حذف شده پس از اتمام در حال پردازش است.`);
 
-    // 4. Generate HLS Adaptive Streaming
+    // 4. Generate HLS Adaptive Streaming — نردبان چندکیفیتی (Multi-Variant)
+    if (!stillHere()) throw new Error(`VIDEODELETED: ویدیو حذف شده پس از اتمام در حال پردازش است.`);
+    // خروجی‌های MP4 ترنسکدشده بدون رمزگذاری مجدد فقط Remux می‌شوند (بسیار سریع) و
+    // پلی‌لیست اصلی master.m3u8 ساخته می‌شود تا پلیر (hls.js) بر اساس سرعت شبکه
+    // به‌صورت خودکار کیفیت را پایین‌تر بیاورد (ABR) و در صورت سرعت مناسب بالا ببرد.
     updateJob('Generating HLS adaptive streaming segments', 85);
     details.hls = 'processing';
     const videoHlsDir = path.join(PRIVATE_HLS_DIR, `video_${videoId}`);
-    if (!fs.existsSync(videoHlsDir)) {
-      fs.mkdirSync(videoHlsDir, { recursive: true });
-    }
 
     try {
-      const hlsMasterPath = path.join(videoHlsDir, 'master.m3u8');
-      const hlsSegmentPath = path.join(videoHlsDir, 'segment_%03d.ts');
+      // پاکسازی خروجی‌های قبلی همین ویدیو (جلوگیری از پلی‌لیست کهنه)
+      fs.rmSync(videoHlsDir, { recursive: true, force: true });
+      fs.mkdirSync(videoHlsDir, { recursive: true });
 
-      await this.runFfmpeg([
-        '-y',
-        '-i', originalFullPath,
-        '-c:v', 'libx264',
-        '-crf', '24',
-        '-preset', 'veryfast',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-hls_time', '4',
-        '-hls_playlist_type', 'vod',
-        '-hls_segment_filename', hlsSegmentPath,
-        hlsMasterPath,
-      ]);
+      interface HlsVariant {
+        label: string;
+        bandwidth: number;
+        width: number;
+        height: number;
+      }
+      const variants: HlsVariant[] = [];
 
-      details.hls = 'completed';
+      for (const preset of QUALITY_PRESETS) {
+        if (details[preset.name] !== 'completed') continue;
+        const renditionPath = path.join(PRIVATE_VIDEOS_DIR, `video_${videoId}_${preset.name}.mp4`);
+        if (!fs.existsSync(renditionPath)) continue;
+
+        const variantDir = path.join(videoHlsDir, `stream_${preset.name}`);
+        fs.mkdirSync(variantDir, { recursive: true });
+
+        // فقط Remux (بدون encode) → چند ثانیه بیشتر طول نمی‌کشد
+        await this.runFfmpeg([
+          '-y',
+          '-i', renditionPath,
+          '-c', 'copy',
+          '-hls_time', '4',
+          '-hls_playlist_type', 'vod',
+          '-hls_segment_filename', path.join(variantDir, 'segment_%03d.ts'),
+          path.join(variantDir, 'index.m3u8'),
+        ]);
+
+        const st = fs.statSync(renditionPath);
+        const bandwidth = Math.max(100_000, Math.round((st.size * 8) / Math.max(1, meta.duration || 10)));
+        // اندازه واقعی: scale='min(preset.width, iw)':-2 → بدون بزرگ‌نمایی
+        const width = Math.min(preset.width, meta.width);
+        const height = Math.max(2, Math.round(((width / Math.max(1, meta.width)) * meta.height) / 2) * 2);
+        variants.push({ label: preset.name, bandwidth, width, height });
+      }
+
+      if (variants.length >= 2) {
+        const masterLines = ['#EXTM3U', '#EXT-X-VERSION:3'];
+        for (const v of variants) {
+          masterLines.push(
+            `#EXT-X-STREAM-INF:BANDWIDTH=${v.bandwidth},AVERAGE-BANDWIDTH=${v.bandwidth},RESOLUTION=${v.width}x${v.height}`
+          );
+          masterLines.push(`stream_${v.label}/index.m3u8`);
+        }
+        masterLines.push('');
+        fs.writeFileSync(path.join(videoHlsDir, 'master.m3u8'), masterLines.join('\n'));
+        details.hls = 'completed';
+        console.log(
+          `[Transcoder] HLS multi-variant ladder ready for video #${videoId}: ${variants.map((v) => v.label).join(', ')}`
+        );
+      } else {
+        // فقط یک کیفیت آماده شده → HLS ساده از فایل اصلی (رفتار قبلی)
+        const hlsMasterPath = path.join(videoHlsDir, 'master.m3u8');
+        const hlsSegmentPath = path.join(videoHlsDir, 'segment_%03d.ts');
+
+        await this.runFfmpeg([
+          '-y',
+          '-i', originalFullPath,
+          '-c:v', 'libx264',
+          '-crf', '24',
+          '-preset', 'veryfast',
+          '-c:a', 'aac',
+          '-b:a', '128k',
+          '-hls_time', '4',
+          '-hls_playlist_type', 'vod',
+          '-hls_segment_filename', hlsSegmentPath,
+          hlsMasterPath,
+        ]);
+        details.hls = 'completed';
+      }
     } catch (hlsErr) {
       console.warn('[Transcoder] HLS generation notice:', hlsErr);
       details.hls = 'failed';
@@ -345,8 +402,8 @@ export class TranscoderService {
 
   private static probeMetadata(filePath: string): Promise<{ width: number; height: number; duration: number; bitrate: number }> {
     return new Promise((resolve) => {
-      // Run ffprobe if available or ffmpeg info
-      const proc = spawn('ffprobe', [
+      // Run ffprobe (bundled binary, PATH fallback)
+      const proc = spawn(FFPROBE_PATH, [
         '-v', 'error',
         '-select_streams', 'v:0',
         '-show_entries', 'stream=width,height,duration,bit_rate:format=duration,bit_rate',
@@ -385,7 +442,7 @@ export class TranscoderService {
 
   private static runFfmpeg(args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = spawn('ffmpeg', args);
+      const child = spawn(FFMPEG_PATH, args);
       let stderr = '';
       child.stderr.on('data', (d) => (stderr += d.toString()));
 

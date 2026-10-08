@@ -19,19 +19,6 @@ const storage = multer.diskStorage({
   },
 });
 
-const allowedMimeTypes = [
-  'video/mp4',
-  'video/quicktime',
-  'video/x-matroska',
-  'video/webm',
-  'video/avi',
-  'video/x-msvideo',
-  'video/mpeg',
-  'video/x-m4v',
-  'video/3gpp',
-  'video/x-flv',
-  'application/octet-stream',
-];
 
 export const videoUpload = multer({
   storage,
@@ -40,11 +27,11 @@ export const videoUpload = multer({
   },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    const validExts = ['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.ts', '.flv', '.wmv'];
-    if (file.mimetype.startsWith('video/') || allowedMimeTypes.includes(file.mimetype) || validExts.includes(ext)) {
+    // پذیرش هر فایلی: فرمت‌های عجیب هم قابل آپلود هستند؛ FFmpeg سمت سرور آن‌ها را تبدیل می‌کند
+    if (file.mimetype || ext) {
       cb(null, true);
     } else {
-      cb(new Error(`فرمت فایل ویدیویی نامعتبر است (${file.mimetype}). فرمت‌های مجاز: MP4, MOV, MKV, WebM, AVI`));
+      cb(new Error('فایل ارسال‌شده نامعتبر است.'));
     }
   },
 });

@@ -52,11 +52,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
 
   const selectFile = (selected: File) => {
     setError(null);
-    const validExts = ['.mp4', '.mov', '.mkv', '.webm', '.avi'];
-    const hasValidExt = validExts.some((ext) => selected.name.toLowerCase().endsWith(ext));
-
-    if (!selected.type.startsWith('video/') && !hasValidExt) {
-      setError('لطفاً یک فایل ویدیویی معتبر انتخاب کنید (فرمت‌های MP4, MOV, MKV, WebM, AVI).');
+    // پذیرش همه فرمت‌های ویدیویی — تبدیل به فرمت استریم سمت سرور انجام می‌شود
+    if (!selected.name || selected.size === 0) {
+      setError('فایل انتخاب‌شده خالی است. لطفاً یک فایل ویدیویی معتبر انتخاب کنید.');
       return;
     }
 
@@ -157,7 +155,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="video/*,.mp4,.mov,.mkv,.webm,.avi"
+                accept="video/*,.mkv,.mpg,.mpeg,.mts,.m2ts,.mxf,.ogv,.flv,.3gp,.vob,.ts,.divx,.f4v,.wmv,.mov,.mp4,.webm,.avi,.m4v"
                 onChange={(e) => e.target.files?.[0] && selectFile(e.target.files[0])}
                 className="hidden"
               />
@@ -172,7 +170,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 انتخاب فایل ویدیو
               </span>
               <p className="text-[11px] text-zinc-500 mt-3">
-                فرمت‌های پشتیبانی شده: MP4, MOV, MKV, WebM, AVI (حداکثر ۵۰۰ مگابایت)
+                همه فرمت‌های ویدیویی پشتیبانی می‌شوند (MP4, MOV, MKV, WebM, AVI, MPG, MTS, MXF, OGV, 3GP, TS و...) — تا ۴ گیگابایت
               </p>
             </div>
           ) : (

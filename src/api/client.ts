@@ -1,4 +1,5 @@
 import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole } from '../types/index.ts';
+import { Upload as TusUpload } from 'tus-js-client';
 
 const TOKEN_KEY = 'cineflow_auth_token';
 
@@ -45,110 +46,78 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   return response.json();
 }
 
-const CHUNK_CONCURRENCY = 6; // تعداد چانک‌های همزمان ( موازی‌سازی = سرعت بسیار بالاتر )
-const CHUNK_RETRY = 3;
-
-async function authedFetch(url: string, init: RequestInit): Promise<Response> {
-  const headers = new Headers(init.headers || {});
-  const token = getStoredToken();
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  return fetch(url, { ...init, headers });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
+// آپلود TUS (tus.io): تکه‌های ۱۶ مگابایتی، ازسره‌گیری بعد از قطعی و تلاش مجدد خودکار
+const TUS_CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB
+const TUS_RETRY_DELAYS = [0, 1000, 2000, 5000, 10000, 30000];
 
 /**
- * آپلود چانکی موازی: فایل به تکه‌های ۴ مگابایتی تقسیم و ۶ تا همزمان ارسال می‌شود.
- * با قطعی اینترنت از همان‌جا که مانده ادامه می‌دهد (Resume) و هر چانک جداگانه retry می‌شود.
+ * آپلود فایل با پروتکل TUS:
+ * - سرور رسمی @tus/server سمت بک‌اند؛ کلاینت با تکه‌های بزرگ و تلاش مجدد خودکار
+ * - اگر وسط کار اینترنت قطع شود از همان‌جا ادامه می‌دهد (Resume)
+ * - خروجی: شناسه نشست آپلود که برای ساخت ویدیو به POST /api/videos می‌رود
  */
-async function chunkedUpload(
+async function tusUpload(
   file: File,
   fields: Record<string, string>,
   onProgress?: (percent: number) => void
 ): Promise<string> {
-  const createRes = await authedFetch('/api/chunked-uploads', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      fileName: file.name,
-      fileSize: file.size,
-      mimeType: file.type || 'video/mp4',
-    }),
-  });
-  if (!createRes.ok) {
-    const err = await createRes.json().catch(() => ({}));
-    throw new Error(err.error || 'خطا در شروع آپلود.');
-  }
-  const session = await createRes.json();
-  const uploadId: string = session.uploadId;
-  const chunkSize: number = session.chunkSize;
-  const totalChunks: number = session.totalChunks;
-  const received: number[] = Array.isArray(session.received) ? session.received : [];
+  const token = getStoredToken();
 
-  const pending: number[] = [];
-  for (let i = 0; i < totalChunks; i++) {
-    if (!received.includes(i)) pending.push(i);
-  }
+  return new Promise<string>((resolve, reject) => {
+    let upload: TusUpload;
 
-  let doneCount = totalChunks - pending.length;
-  const metaHeader = btoa(unescape(encodeURIComponent(JSON.stringify(fields))));
-
-  const report = () => {
-    if (onProgress) onProgress(Math.min(99, Math.round((doneCount / totalChunks) * 100)));
-  };
-  report();
-
-  const sendChunk = async (index: number): Promise<void> => {
-    const start = index * chunkSize;
-    const blob = file.slice(start, Math.min(start + chunkSize, file.size));
-    let lastError: Error | null = null;
-    for (let attempt = 1; attempt <= CHUNK_RETRY; attempt++) {
-      try {
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/octet-stream',
-          'X-Upload-Meta': metaHeader,
-        };
-        const res = await authedFetch(`/api/chunked-uploads/${uploadId}/chunk/${index}`, {
-          method: 'PUT',
-          headers,
-          body: blob,
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || `چانک ${index} رد شد (کد ${res.status}).`);
+    upload = new TusUpload(file, {
+      endpoint: '/api/tus',
+      chunkSize: TUS_CHUNK_SIZE,
+      retryDelays: TUS_RETRY_DELAYS,
+      uploadDataDuringCreation: true,
+      removeFingerprintOnSuccess: true,
+      storeFingerprintForResuming: true,
+      metadata: {
+        filename: file.name,
+        fileType: file.type || 'video/mp4',
+        ...fields,
+      },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      onProgress: (bytesSent: number, bytesTotal: number) => {
+        if (onProgress && bytesTotal > 0) {
+          onProgress(Math.min(100, Math.round((bytesSent / bytesTotal) * 100)));
         }
-        doneCount++;
-        report();
-        return;
-      } catch (err: any) {
-        lastError = err;
-        if (attempt < CHUNK_RETRY) await sleep(500 * attempt); // backoff
-      }
-    }
-    throw lastError || new Error(`ارسال چانک ${index} ناموفق بود.`);
-  };
+      },
+      onSuccess: () => {
+        const url = upload.url || '';
+        const uploadId = url.split('/').filter(Boolean).pop() || '';
+        if (!uploadId) {
+          reject(new Error('آپلود کامل نشد؛ لطفاً دوباره تلاش کنید.'));
+          return;
+        }
+        if (onProgress) onProgress(100);
+        resolve(uploadId);
+      },
+      onError: (err: any) => {
+        let message = 'آپلود با خطا متوقف شد؛ لطفاً دوباره تلاش کنید.';
+        try {
+          const body = err?.originalResponse?.getBody?.();
+          if (typeof body === 'string' && body.trim()) {
+            try {
+              const parsed = JSON.parse(body);
+              if (parsed?.error) message = parsed.error;
+              else message = body.trim();
+            } catch {
+              message = body.trim();
+            }
+          } else if (err?.message) {
+            message = String(err.message);
+          }
+        } catch {
+          // keep default message
+        }
+        reject(new Error(message));
+      },
+    });
 
-  // صف موازی با N worker همزمان
-  const queue = [...pending];
-  const workers = Array.from({ length: Math.min(CHUNK_CONCURRENCY, queue.length) }, async () => {
-    while (queue.length > 0) {
-      const index = queue.shift();
-      if (index === undefined) break;
-      await sendChunk(index);
-    }
+    upload.start();
   });
-  await Promise.all(workers);
-
-  // تکمیل نشست
-  const completeRes = await authedFetch(`/api/chunked-uploads/${uploadId}/complete`, { method: 'POST' });
-  if (!completeRes.ok) {
-    const err = await completeRes.json().catch(() => ({}));
-    throw new Error(err.error || 'تکمیل آپلود ناموفق بود.');
-  }
-  if (onProgress) onProgress(100);
-  return uploadId;
 }
 
 export const api = {
@@ -231,7 +200,7 @@ export const api = {
 
   getAdminStats: () => request<AdminStats>('/api/videos/stats'),
 
-  // ---- آپلود چانکی موازی (فیچر ۳: آپلود فوق‌سریع، مقاوم در برابر قطعی) ----
+  // ---- آپلود TUS (پروتکل استاندارد tus.io: سریع، ازسره‌گیر، مقاوم در برابر قطعی) ----
   uploadVideo: (formData: FormData, onProgress?: (percent: number) => void) => {
     const file = formData.get('video');
     if (!(file instanceof File)) {
@@ -241,7 +210,7 @@ export const api = {
     formData.forEach((value, key) => {
       if (typeof value === 'string') fields[key] = value;
     });
-    return chunkedUpload(file, fields, onProgress).then((uploadId) =>
+    return tusUpload(file, fields, onProgress).then((uploadId) =>
       request<Video>('/api/videos', {
         method: 'POST',
         body: JSON.stringify({ uploadId, ...fields }),
@@ -258,7 +227,7 @@ export const api = {
     formData.forEach((value, key) => {
       if (typeof value === 'string') fields[key] = value;
     });
-    return chunkedUpload(file, fields, onProgress).then((uploadId) =>
+    return tusUpload(file, fields, onProgress).then((uploadId) =>
       request<Video>(`/api/videos/${videoId}/versions`, {
         method: 'POST',
         body: JSON.stringify({ uploadId, ...fields }),

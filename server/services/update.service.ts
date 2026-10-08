@@ -28,6 +28,54 @@ export interface UpdateResult {
   error?: string;
 }
 
+/**
+ * اجرای npm install به‌شکلی که روی همه پلتفرم‌ها کار کند:
+ * - در ویندوز spawn بدون shell باعث ENOENT/EINVAL روی npm.cmd می‌شود → shell فعال می‌شود.
+ * - چند بار تلاش مجدد برای خطاهای موقت (شبکه، قفل file-lock و ...).
+ * - خطای spawn خودِ process هم گرفته می‌شود تا هیچ‌وقت پیام خام به کاربر نرسد.
+ */
+function runNpmInstall(): { ok: boolean; output: string; attempts: number } {
+  const isWin = process.platform === 'win32';
+  let output = '';
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const r = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--loglevel=error'], {
+      cwd: PROJECT_ROOT,
+      encoding: 'utf8',
+      timeout: 10 * 60 * 1000,
+      windowsHide: true,
+      shell: isWin,
+      env: { ...process.env, NO_UPDATE_NOTIFIER: '1' },
+    });
+
+    const stdout = (r.stdout || '').toString().trim();
+    const stderr = (r.stderr || '').toString().trim();
+    const spawnError = r.error ? String((r.error as any).code || r.error.message || r.error) : '';
+    const attemptOutput = [spawnError, stderr, stdout].filter(Boolean).join('\n').trim();
+
+    if (r.status === 0 && !r.error) {
+      if (attempt > 1) console.log(`[Update] npm install در تلاش ${attempt} موفق شد.`);
+      return { ok: true, output: attemptOutput, attempts: attempt };
+    }
+
+    output = attemptOutput || `npm install با کد ${r.status} خارج شد.`;
+    console.error(`[Update] تلاش ${attempt}/${maxAttempts} npm install ناموفق: ${output.slice(-400)}`);
+
+    // خطاهای موقت را دوباره امتحان کن؛ خطای spawn (npm پیدا نشد) را هم یک بار دیگر
+    if (attempt < maxAttempts) {
+      // کمی مکث برای آزاد شدن قفل‌های احتمالی node_modules
+      spawnSync(isWin ? 'timeout' : 'sleep', isWin ? ['/t', '3', '/nobreak'] : ['3'], {
+        windowsHide: true,
+        shell: false,
+        encoding: 'utf8',
+      });
+    }
+  }
+
+  return { ok: false, output, attempts: maxAttempts };
+}
+
 function githubAuthArgs(): string[] {
   const token = process.env.GITHUB_TOKEN || '';
   if (!token) return [];
@@ -280,14 +328,10 @@ export class UpdateService {
         const depChanged = git(['diff', '--name-only', localSha.stdout, remoteSha.stdout, '--', 'package.json', 'package-lock.json']);
         if (depChanged.ok && depChanged.stdout) {
           console.log('[Update] وابستگی‌ها تغییر کرده‌اند — در حال npm install...');
-          const npm = spawnSync('npm', ['install', '--no-audit', '--no-fund'], {
-            cwd: PROJECT_ROOT,
-            encoding: 'utf8',
-            timeout: 10 * 60 * 1000,
-            windowsHide: true,
-          });
-          if (npm.status !== 0) {
-            result.error = `npm install ناموفق بود: ${(npm.stderr || npm.stdout || '').slice(-500)}`;
+          const npm = runNpmInstall();
+          if (!npm.ok) {
+            // آپدیت کد قبلاً اعمال شده است؛ خطای نصب را گزارش کن اما بروزرسانی را بازگردانده نکن
+            result.error = `npm install ناموفق بود (بعد از ${npm.attempts} تلاش): ${npm.output.slice(-500)}`;
             return result;
           }
           result.npmInstalled = true;

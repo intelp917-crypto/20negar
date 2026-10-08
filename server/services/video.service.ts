@@ -572,7 +572,7 @@ export class VideoService {
     // پاکسازی فایل‌های فیزیکی
     try {
       const { fileStorage } = await import('../storage/local.storage.ts');
-      const { PRIVATE_VIDEOS_DIR } = await import('../config.ts');
+      const { PRIVATE_VIDEOS_DIR, PRIVATE_HLS_DIR } = await import('../config.ts');
       const path = (await import('path')).default;
       const fs = (await import('fs')).default;
 
@@ -591,7 +591,8 @@ export class VideoService {
         }
       }
 
-      const hlsDir = path.join(PRIVATE_VIDEOS_DIR, `hls_${videoId}`);
+      // پوشه HLS واقعی: data/storage/hls/video_<id> (شامل زیرپوشه‌های نردبان کیفیت)
+      const hlsDir = path.join(PRIVATE_HLS_DIR, `video_${videoId}`);
       if (fs.existsSync(hlsDir)) {
         try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch {}
       }
@@ -600,9 +601,14 @@ export class VideoService {
     }
 
     // حذف رکوردها از پایگاه داده
+    // (جدول واقعی processing_jobs است؛ جدولی به نام transcoding_jobs وجود ندارد)
     db.run('DELETE FROM video_reviews WHERE video_id = ?', [videoId]);
     db.run('DELETE FROM video_qualities WHERE video_id = ?', [videoId]);
-    db.run('DELETE FROM transcoding_jobs WHERE video_id = ?', [videoId]);
+    try {
+      db.run('DELETE FROM processing_jobs WHERE video_id = ?', [videoId]);
+    } catch (jobErr) {
+      console.warn('processing_jobs cleanup warning:', jobErr);
+    }
     db.run('DELETE FROM videos WHERE id = ?', [videoId]);
 
     AuditService.log(

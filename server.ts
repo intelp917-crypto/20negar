@@ -18,6 +18,7 @@ import videoRoutes from './server/routes/video.routes.ts';
 import notificationRoutes from './server/routes/notification.routes.ts';
 import auditRoutes from './server/routes/audit.routes.ts';
 import uploadRoutes from './server/routes/upload.routes.ts';
+import tusRoutes from './server/routes/tus.routes.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,9 +37,17 @@ async function startServer() {
     const origin = req.headers.origin || '*';
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Upload-Meta, Range');
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Upload-Meta, Range, ' +
+        'Tus-Resumable, Tus-Version, Tus-Extension, Tus-Max-Size, Upload-Length, Upload-Offset, ' +
+        'Upload-Metadata, Upload-Concat, Upload-Defer-Length, Location'
+    );
     res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+    res.header(
+      'Access-Control-Expose-Headers',
+      'Content-Range, Accept-Ranges, Content-Length, Content-Type, Location, Tus-Resumable, Upload-Offset, Upload-Length'
+    );
     if (req.method === 'OPTIONS') {
       res.sendStatus(200);
       return;
@@ -68,6 +77,8 @@ async function startServer() {
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/audit-logs', auditRoutes);
   app.use('/api/chunked-uploads', uploadRoutes);
+  // آپلود TUS (پروتکل استاندارد ازسره‌گیر — سریع و مقاوم در برابر قطعی)
+  app.use('/api/tus', tusRoutes);
 
   // Health check
   app.get('/api/health', (_req, res) => {

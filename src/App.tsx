@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext.tsx';
-import { ToastProvider } from './context/ToastContext.tsx';
+import { ToastProvider, useToast } from './context/ToastContext.tsx';
 import { LoginPage } from './pages/LoginPage.tsx';
 import { Navbar } from './components/Navbar.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
@@ -21,6 +21,58 @@ const MainLayout: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [isUploadOpen, setIsUploadOpen] = useState<boolean>(false);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
+  const toast = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
+  /**
+   * دکمه بازگشت موبایل:
+   *  - بک اول: از سایت خارج نمی‌شویم؛ فقط پیام «دو بار بک بزن» نشان داده می‌شود
+   *    و یک ورودی محافظ به تاریخچه اضافه می‌شود.
+   *  - بک دوم (کمتر از ۲ ثانیه بعد): واقعاً از سایت خارج می‌شویم.
+   */
+  useEffect(() => {
+    const GUARD_INTERVAL = 2000;
+    let lastBackAt = 0;
+    let exiting = false;
+
+    try {
+      history.pushState({ twentynegarGuard: true }, '');
+    } catch {
+      // بعضی مرورگرها pushState را محدود می‌کنند — در آن صورت رفتار پیش‌فرض مرورگر می‌ماند
+    }
+
+    const onPopState = (): void => {
+      if (exiting) return;
+      const now = Date.now();
+
+      if (now - lastBackAt <= GUARD_INTERVAL) {
+        // بک دوم و سریع → خروج واقعی از سایت (رفتن به صفحه قبل از سایت)
+        exiting = true;
+        try {
+          history.go(-1);
+        } catch {
+          // ignore
+        }
+        window.setTimeout(() => {
+          exiting = false;
+        }, 800);
+        return;
+      }
+
+      lastBackAt = now;
+      toastRef.current.warning('برای خروج از سایت، دکمه بازگشت را دو بار پشت‌سرهم بزنید.');
+      try {
+        // ورودی محافظ: تا وقتی دو بک سریع نزده‌اید از سایت خارج نشوید
+        history.pushState({ twentynegarGuard: true }, '');
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   // Default tab based on role
   useEffect(() => {
