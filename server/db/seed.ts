@@ -4,6 +4,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { PRIVATE_VIDEOS_DIR, PRIVATE_THUMBNAILS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
+import { FFMPEG_PATH } from '../services/ffmpeg.ts';
 
 export async function seedDatabase(): Promise<void> {
   const existingUsers = db.query('SELECT COUNT(*) as count FROM users');
@@ -123,7 +124,7 @@ async function generateSeedVideoFiles(adminId: number, editorId: number, supervi
         return resolve();
       }
       const child = spawn(
-        'ffmpeg',
+        FFMPEG_PATH,
         [
           '-y',
           '-f', 'lavfi',
@@ -140,8 +141,8 @@ async function generateSeedVideoFiles(adminId: number, editorId: number, supervi
       child.on('close', (code) => {
         if (code === 0) {
           const thumbProc = spawn(
-            'ffmpeg',
-            ['-y', '-ss', '00:00:01', '-i', outFile, '-frames:v', '1', '-q:v', '2', thumbFile],
+            FFMPEG_PATH,
+            ['-y', '-i', outFile, '-frames:v', '1', '-q:v', '2', thumbFile],
             { stdio: 'ignore' }
           );
           thumbProc.on('close', () => resolve());
@@ -169,7 +170,7 @@ async function generateSeedVideoFiles(adminId: number, editorId: number, supervi
       const segmentPattern = path.join(hlsDir, 'segment_%03d.ts');
 
       const child = spawn(
-        'ffmpeg',
+        FFMPEG_PATH,
         [
           '-y',
           '-i', mp4Path,
