@@ -40,6 +40,8 @@ export interface VideoDto {
   adminId: number | null;
   adminName: string | null;
   adminUsername: string | null;
+  uploadedById: number | null;
+  uploadedByName: string | null;
   status: 'Uploaded' | 'PendingReview' | 'Approved' | 'Rejected';
   processingStatus: 'Uploading' | 'Processing' | 'Ready' | 'ProcessingFailed';
   duration: number;
@@ -79,6 +81,7 @@ export class VideoService {
         v.supervisor_id as supervisorId,
         sp.display_name as supervisorName, sp.username as supervisorUsername,
         v.admin_id as adminId, ad.display_name as adminName, ad.username as adminUsername,
+        v.uploaded_by_id as uploadedById, ub.display_name as uploadedByName,
         v.status, v.processing_status as processingStatus, v.duration,
         v.original_resolution as originalResolution, v.file_size as fileSize,
         v.version_number as versionNumber, v.parent_video_id as parentVideoId,
@@ -88,14 +91,20 @@ export class VideoService {
       JOIN users ed ON v.editor_id = ed.id
       JOIN users sp ON v.supervisor_id = sp.id
       LEFT JOIN users ad ON v.admin_id = ad.id
+      LEFT JOIN users ub ON v.uploaded_by_id = ub.id
       WHERE 1=1
     `;
     const params: any[] = [];
 
     // STRICT USER DATA ISOLATION (هر کسی فقط ویدیوهای خودش را می‌بیند)
     if (user.role === 'Editor') {
-      // Editor ONLY sees their own videos, regardless of filters
-      sql += ` AND v.editor_id = ?`;
+      // Editor sees their own videos plus raw footage uploaded by cameramen,
+      // so they can pick it up for editing.
+      sql += ` AND (v.editor_id = ? OR v.uploaded_by_id IS NOT NULL)`;
+      params.push(user.id);
+    } else if (user.role === 'Cameraman') {
+      // Cameraman sees only the footage they uploaded themselves.
+      sql += ` AND v.uploaded_by_id = ?`;
       params.push(user.id);
     } else if (user.role === 'Supervisor') {
       // Supervisor ONLY sees videos assigned to them
@@ -170,6 +179,7 @@ export class VideoService {
         v.supervisor_id as supervisorId,
         sp.display_name as supervisorName, sp.username as supervisorUsername,
         v.admin_id as adminId, ad.display_name as adminName, ad.username as adminUsername,
+        v.uploaded_by_id as uploadedById, ub.display_name as uploadedByName,
         v.status, v.processing_status as processingStatus, v.duration,
         v.original_resolution as originalResolution, v.file_size as fileSize,
         v.version_number as versionNumber, v.parent_video_id as parentVideoId,
@@ -179,13 +189,17 @@ export class VideoService {
       JOIN users ed ON v.editor_id = ed.id
       JOIN users sp ON v.supervisor_id = sp.id
       LEFT JOIN users ad ON v.admin_id = ad.id
+      LEFT JOIN users ub ON v.uploaded_by_id = ub.id
       WHERE v.id = ?
     `;
     const video = db.queryOne<VideoDto>(sql, [videoId]);
     if (!video) return null;
 
     // Strict Authorization Check:
-    if (user.role === 'Editor' && video.editorId !== user.id) {
+    if (user.role === 'Editor' && video.editorId !== user.id && video.uploadedById === null) {
+      return null;
+    }
+    if (user.role === 'Cameraman' && video.uploadedById !== user.id) {
       return null;
     }
     if (user.role === 'Supervisor' && video.supervisorId !== user.id) {
@@ -247,6 +261,7 @@ export class VideoService {
     fileSize: number;
     editorId: number;
     supervisorId: number;
+    uploadedById?: number | null;
     parentVideoId?: number | null;
     versionNumber?: number;
     ipAddress?: string;
@@ -271,16 +286,17 @@ export class VideoService {
 
     const res = db.run(
       `INSERT INTO videos (
-        title, original_filename, original_path, editor_id, supervisor_id,
+        title, original_filename, original_path, editor_id, supervisor_id, uploaded_by_id,
         status, processing_status, file_size, version_number, parent_video_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         params.title,
         params.originalFilename,
         params.originalPath,
         params.editorId,
         params.supervisorId,
+        params.uploadedById ?? null,
         status,
         processingStatus,
         params.fileSize,
@@ -296,13 +312,16 @@ export class VideoService {
     // Queue for transcoding background job
     TranscoderService.queueVideo(newVideoId);
 
+    const uploadedByCameraman = Boolean(params.uploadedById);
+    const uploaderLabel = uploadedByCameraman ? 'تصویربردار' : 'تدوین‌گر';
+
     // Audit log
     AuditService.log(
       params.editorId,
-      'بارگذاری ویدیو',
+      uploadedByCameraman ? 'بارگذاری فایل خام توسط تصویربردار' : 'بارگذاری ویدیو',
       'Video',
       newVideoId,
-      `تدوین‌گر ویدیوی "${params.title}" (نسخه ${params.versionNumber || 1}) را بارگذاری کرد و به ناظر کیفی ${supervisor.display_name} اختصاص داد.`,
+      `${uploaderLabel} ویدیوی "${params.title}" (نسخه ${params.versionNumber || 1}) را بارگذاری کرد و به ناظر کیفی ${supervisor.display_name} اختصاص داد.`,
       params.ipAddress
     );
 
@@ -310,12 +329,15 @@ export class VideoService {
     NotificationService.create(
       params.supervisorId,
       'ویدیوی جدید برای بازبینی',
-      `${editor?.display_name || 'تدوین‌گر'} پروژه "${params.title}" را جهت بازبینی ارسال نمود.`,
+      `${editor?.display_name || uploaderLabel} پروژه "${params.title}" را جهت بازبینی ارسال نمود.`,
       'info',
       `/videos/${newVideoId}`
     );
 
-    return this.getVideoById(newVideoId, { id: params.editorId, role: 'Editor' })!;
+    return this.getVideoById(newVideoId, {
+      id: params.editorId,
+      role: uploadedByCameraman ? 'Cameraman' : 'Editor',
+    })!;
   }
 
   public static approveVideo(
@@ -564,8 +586,9 @@ export class VideoService {
     const isSuperAdmin = user.role === 'SuperAdmin';
     const isOwnerEditor = user.role === 'Editor' && video.editor_id === user.id;
     const isAssignedSupervisor = user.role === 'Supervisor' && video.supervisor_id === user.id;
+    const isOwnerCameraman = user.role === 'Cameraman' && video.uploaded_by_id === user.id;
 
-    if (!isSuperAdmin && !isOwnerEditor && !isAssignedSupervisor) {
+    if (!isSuperAdmin && !isOwnerEditor && !isAssignedSupervisor && !isOwnerCameraman) {
       throw new Error('شما دسترسی مجاز برای حذف این ویدیو را ندارید.');
     }
 
@@ -632,6 +655,14 @@ export class VideoService {
       const pendingVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE editor_id = ? AND status = 'PendingReview'", [user.id])?.c as number) || 0;
       const approvedVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE editor_id = ? AND status = 'Approved'", [user.id])?.c as number) || 0;
       const rejectedVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE editor_id = ? AND status = 'Rejected'", [user.id])?.c as number) || 0;
+      return { totalVideos, pendingVideos, approvedVideos, rejectedVideos, totalEditors: 1, totalSupervisors: 1 };
+    }
+
+    if (user.role === 'Cameraman') {
+      const totalVideos = (db.queryOne<any>('SELECT COUNT(*) as c FROM videos WHERE uploaded_by_id = ?', [user.id])?.c as number) || 0;
+      const pendingVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE uploaded_by_id = ? AND status = 'PendingReview'", [user.id])?.c as number) || 0;
+      const approvedVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE uploaded_by_id = ? AND status = 'Approved'", [user.id])?.c as number) || 0;
+      const rejectedVideos = (db.queryOne<any>("SELECT COUNT(*) as c FROM videos WHERE uploaded_by_id = ? AND status = 'Rejected'", [user.id])?.c as number) || 0;
       return { totalVideos, pendingVideos, approvedVideos, rejectedVideos, totalEditors: 1, totalSupervisors: 1 };
     }
 

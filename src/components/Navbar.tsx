@@ -9,11 +9,9 @@ import {
   Info,
   XCircle,
   LogOut,
-  UserCheck,
   ChevronDown,
   Menu,
   Film,
-  Sparkles,
   Crown,
 } from 'lucide-react';
 
@@ -24,7 +22,7 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab }) => {
-  const { user, logout, switchUserFast } = useAuth();
+  const { user, logout } = useAuth();
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -90,6 +88,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
         return 'تدوین‌گر';
       case 'Supervisor':
         return 'ناظر کیفی';
+      case 'Cameraman':
+        return 'تصویربردار';
       case 'Admin':
       default:
         return 'ادمین';
@@ -104,6 +104,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
         return 'bg-purple-500/10 text-purple-400 border-purple-500/30';
       case 'Supervisor':
         return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
+      case 'Cameraman':
+        return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
       case 'Editor':
       default:
         return 'bg-sky-500/10 text-sky-400 border-sky-500/30';
@@ -140,26 +142,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
 
       {/* Right Controls */}
       <div className="flex items-center gap-3">
-        {/* Fast Role Switcher */}
-        <div className="hidden lg:flex items-center bg-zinc-900 border border-zinc-800 rounded-xl p-1 text-xs">
-          <span className="text-zinc-500 px-2 flex items-center gap-1">
-            <Sparkles className="w-3 h-3 text-purple-400" /> تعویض نقش:
-          </span>
-          {(['SuperAdmin', 'Admin', 'Editor', 'Supervisor'] as UserRole[]).map((r) => (
-            <button
-              key={r}
-              onClick={() => switchUserFast(r)}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
-                user?.role === r
-                  ? 'bg-purple-600 text-white shadow-sm font-bold'
-                  : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-              }`}
-            >
-              {getRoleLabel(r)}
-            </button>
-          ))}
-        </div>
-
         {/* Notifications Dropdown */}
         <div className="relative" ref={notificationRef}>
           <button
@@ -258,26 +240,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
               <div className="p-2 border-b border-zinc-800">
                 <div className="font-bold text-zinc-100">{user?.displayName}</div>
                 <div className="text-zinc-500 text-[11px] mt-0.5">@{user?.username} • {getRoleLabel(user?.role)}</div>
-              </div>
-              <div className="py-1">
-                <div className="px-2 py-1 text-[10px] uppercase text-zinc-500">
-                  تغییر سریع حساب کاربری (دمو)
-                </div>
-                {(['SuperAdmin', 'Admin', 'Editor', 'Supervisor'] as UserRole[]).map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => {
-                      switchUserFast(r);
-                      setShowUserMenu(false);
-                    }}
-                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-right transition-colors ${
-                      user?.role === r ? 'text-purple-400 bg-purple-500/10 font-bold' : 'text-zinc-300 hover:bg-zinc-800'
-                    }`}
-                  >
-                    <span>حساب {getRoleLabel(r)}</span>
-                    {user?.role === r && <UserCheck className="w-3.5 h-3.5" />}
-                  </button>
-                ))}
               </div>
               <div className="border-t border-zinc-800 pt-1 mt-1">
                 <button

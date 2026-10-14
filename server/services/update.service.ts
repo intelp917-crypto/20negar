@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const REPO_OWNER = 'intelp917-crypto';
 const REPO_NAME = '20negar';
@@ -55,12 +55,12 @@ function runNpmInstall(): { ok: boolean; output: string; attempts: number } {
     const attemptOutput = [spawnError, stderr, stdout].filter(Boolean).join('\n').trim();
 
     if (r.status === 0 && !r.error) {
-      if (attempt > 1) console.log(`[Update] npm install در تلاش ${attempt} موفق شد.`);
+      if (attempt > 1) console.log(`[Update] npm install succeeded on attempt ${attempt}.`);
       return { ok: true, output: attemptOutput, attempts: attempt };
     }
 
-    output = attemptOutput || `npm install با کد ${r.status} خارج شد.`;
-    console.error(`[Update] تلاش ${attempt}/${maxAttempts} npm install ناموفق: ${output.slice(-400)}`);
+    output = attemptOutput || `npm install exited with code ${r.status}.`;
+    console.error(`[Update] npm install attempt ${attempt}/${maxAttempts} failed: ${output.slice(-400)}`);
 
     // خطاهای موقت را دوباره امتحان کن؛ خطای spawn (npm پیدا نشد) را هم یک بار دیگر
     if (attempt < maxAttempts) {
@@ -121,7 +121,7 @@ function isGitRepo(): boolean {
  */
 function ensureRepo(): { ok: boolean; error?: string } {
   if (!isGitRepo()) {
-    console.log('[Update] ریپوزیتوری محلی یافت نشد — در حال راه‌اندازی git...');
+    console.log('[Update] Local repository not found — initializing git...');
     if (!git(['init', '-b', 'main']).ok) {
       if (!git(['init']).ok) return { ok: false, error: 'git init ناموفق بود.' };
     }
@@ -193,7 +193,7 @@ export class UpdateService {
         env: { ...process.env, FREEBUFF_UPDATE_RESTARTED: '1' },
       });
     } catch (err: any) {
-      console.error('[Update] ری‌استارت خودکار ممکن نشد؛ لطفاً سرور را دستی اجرا کنید:', err?.message || err);
+      console.error('[Update] Automatic restart failed; please run the server manually:', err?.message || err);
     }
   }
 
@@ -327,7 +327,7 @@ export class UpdateService {
       if (opts.npmInstall) {
         const depChanged = git(['diff', '--name-only', localSha.stdout, remoteSha.stdout, '--', 'package.json', 'package-lock.json']);
         if (depChanged.ok && depChanged.stdout) {
-          console.log('[Update] وابستگی‌ها تغییر کرده‌اند — در حال npm install...');
+          console.log('[Update] Dependencies changed — running npm install...');
           const npm = runNpmInstall();
           if (!npm.ok) {
             // آپدیت کد قبلاً اعمال شده است؛ خطای نصب را گزارش کن اما بروزرسانی را بازگردانده نکن

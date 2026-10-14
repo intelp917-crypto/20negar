@@ -15,12 +15,27 @@ export interface QualityTarget {
   crf: string;
 }
 
+/**
+ * Quality ladder used for adaptive streaming (HLS variants).
+ *
+ * Important: the uploaded file is always stored untouched and is the default
+ * quality for playback and download, so the source quality is never lost. When
+ * a rendition would not actually be downscaled (source height <= preset
+ * height) it is REMUXED with `-c copy` instead of re-encoded, which keeps the
+ * original video bitstream bit-for-bit.
+ */
 export const QUALITY_PRESETS: QualityTarget[] = [
-  { name: '1080p', width: 1920, height: 1080, videoBitrate: '4500k', audioBitrate: '192k', crf: '22' },
-  { name: '720p', width: 1280, height: 720, videoBitrate: '2500k', audioBitrate: '128k', crf: '24' },
-  { name: '480p', width: 854, height: 480, videoBitrate: '1200k', audioBitrate: '96k', crf: '26' },
-  { name: '360p', width: 640, height: 360, videoBitrate: '800k', audioBitrate: '64k', crf: '28' },
+  { name: '1080p', width: 1920, height: 1080, videoBitrate: '4500k', audioBitrate: '192k', crf: '20' },
+  { name: '720p', width: 1280, height: 720, videoBitrate: '2500k', audioBitrate: '160k', crf: '21' },
+  { name: '480p', width: 854, height: 480, videoBitrate: '1400k', audioBitrate: '128k', crf: '22' },
+  { name: '360p', width: 640, height: 360, videoBitrate: '1000k', audioBitrate: '96k', crf: '23' },
 ];
+
+/** Rounds down to the nearest even number (H.264 requires even dimensions). */
+function even(value: number): number {
+  const v = Math.round(value);
+  return v % 2 === 0 ? v : v - 1;
+}
 
 export interface ProcessingProgressDetails {
   original: 'completed';
@@ -190,7 +205,7 @@ export class TranscoderService {
 
     // 2. Generate Thumbnail
     const stillHere = () => Boolean(db.queryOne<{ id: number }>(`SELECT id FROM videos WHERE id = ?`, [videoId]));
-    if (!stillHere()) throw new Error(`VIDEODELETED: ویدیو حذف شده پس از اتمام در حال پردازش است.`);
+    if (!stillHere()) throw new Error(`VIDEODELETED: the video was deleted while processing was in progress.`);
 
     updateJob('Generating high-resolution thumbnail', 15);
     const thumbFilename = `thumb_v${videoId}_${Date.now()}.jpg`;
@@ -228,7 +243,7 @@ export class TranscoderService {
     }
 
     // 3. Multi-resolution Transcoding
-    if (!stillHere()) throw new Error(`VIDEODELETED: ویدیو حذف شده پس از اتمام در حال پردازش است.`);
+    if (!stillHere()) throw new Error(`VIDEODELETED: the video was deleted while processing was in progress.`);
 
     const targetsToProcess = QUALITY_PRESETS.filter((p) => {
       // Only transcode down or matching original height + reasonable buffer
@@ -246,23 +261,42 @@ export class TranscoderService {
       const targetFullPath = path.join(PRIVATE_VIDEOS_DIR, targetFilename);
       const targetKey = `videos/${targetFilename}`;
 
+      // A rendition is lossless when the source is already at (or below) this
+      // preset's height: no scaling is needed, so the bitstream is remuxed
+      // instead of re-encoded.
+      const losslessRemux = meta.height <= target.height;
+
       try {
-        // Transcode to MP4 with scale keeping aspect ratio
-        await this.runFfmpeg([
-          '-y',
-          '-i', originalFullPath,
-          '-vf', `scale='min(${target.width},iw)':-2`,
-          '-c:v', 'libx264',
-          '-crf', target.crf,
-          '-preset', 'veryfast',
-          '-c:a', 'aac',
-          '-b:a', target.audioBitrate,
-          '-movflags', '+faststart',
-          targetFullPath,
-        ]);
+        if (losslessRemux) {
+          // Stream copy: zero re-encoding, zero quality loss.
+          await this.runFfmpeg([
+            '-y',
+            '-i', originalFullPath,
+            '-c', 'copy',
+            '-movflags', '+faststart',
+            targetFullPath,
+          ]);
+        } else {
+          // Genuine downscale (adaptive streaming variant): keep the highest
+          // practical visual quality with a slow-ish preset and low CRF.
+          await this.runFfmpeg([
+            '-y',
+            '-i', originalFullPath,
+            '-vf', `scale='min(${target.width},iw)':-2`,
+            '-c:v', 'libx264',
+            '-crf', target.crf,
+            '-preset', 'medium',
+            '-c:a', 'aac',
+            '-b:a', target.audioBitrate,
+            '-movflags', '+faststart',
+            targetFullPath,
+          ]);
+        }
 
         const stat = fs.statSync(targetFullPath);
         const now = new Date().toISOString();
+        const actualWidth = losslessRemux ? meta.width : Math.min(target.width, meta.width);
+        const actualHeight = losslessRemux ? meta.height : even((actualWidth / Math.max(1, meta.width)) * meta.height);
 
         // Check if quality record exists
         const existingQuality = db.queryOne(
@@ -272,17 +306,20 @@ export class TranscoderService {
         if (existingQuality) {
           db.run(
             `UPDATE video_qualities SET file_path = ?, file_size = ?, width = ?, height = ? WHERE id = ?`,
-            [targetKey, stat.size, target.width, target.height, existingQuality.id]
+            [targetKey, stat.size, actualWidth, actualHeight, existingQuality.id]
           );
         } else {
           db.run(
             `INSERT INTO video_qualities (video_id, quality, file_path, width, height, bitrate, file_size, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [videoId, target.name, targetKey, target.width, target.height, parseInt(target.videoBitrate, 10) * 1000, stat.size, now]
+            [videoId, target.name, targetKey, actualWidth, actualHeight, parseInt(target.videoBitrate, 10) * 1000, stat.size, now]
           );
         }
 
         details[target.name] = 'completed';
+        if (losslessRemux) {
+          console.log(`[Transcoder] ${target.name} rendition remuxed without re-encoding (lossless).`);
+        }
       } catch (err: any) {
         console.error(`[Transcoder] Failed to encode ${target.name}:`, err);
         details[target.name] = 'failed';
@@ -293,10 +330,10 @@ export class TranscoderService {
     }
 
     // 4. Generate HLS Adaptive Streaming — نردبان چندکیفیتی (Multi-Variant)
-    if (!stillHere()) throw new Error(`VIDEODELETED: ویدیو حذف شده پس از اتمام در حال پردازش است.`);
+    if (!stillHere()) throw new Error(`VIDEODELETED: the video was deleted while processing was in progress.`);
 
     // 4. Generate HLS Adaptive Streaming — نردبان چندکیفیتی (Multi-Variant)
-    if (!stillHere()) throw new Error(`VIDEODELETED: ویدیو حذف شده پس از اتمام در حال پردازش است.`);
+    if (!stillHere()) throw new Error(`VIDEODELETED: the video was deleted while processing was in progress.`);
     // خروجی‌های MP4 ترنسکدشده بدون رمزگذاری مجدد فقط Remux می‌شوند (بسیار سریع) و
     // پلی‌لیست اصلی master.m3u8 ساخته می‌شود تا پلیر (hls.js) بر اساس سرعت شبکه
     // به‌صورت خودکار کیفیت را پایین‌تر بیاورد (ABR) و در صورت سرعت مناسب بالا ببرد.
@@ -344,6 +381,41 @@ export class TranscoderService {
         variants.push({ label: preset.name, bandwidth, width, height });
       }
 
+      // اگر منبع از بالاترین رندیشن ساخته‌شده بزرگ‌تر باشد (مثلاً منبع 4K)،
+      // خودِ فایل اصلی را هم به‌عنوان بالاترین پلهٔ نردبان HLS اضافه می‌کنیم تا
+      // پخش نیز دقیقاً با کیفیت کامل منبع انجام شود (بدون هیچ کاهش کیفیتی).
+      const highestBuiltHeight = variants.reduce((max, v) => Math.max(max, v.height), 0);
+      if (meta.height > highestBuiltHeight) {
+        const sourceDir = path.join(videoHlsDir, 'stream_source');
+        fs.mkdirSync(sourceDir, { recursive: true });
+        try {
+          await this.runFfmpeg([
+            '-y',
+            '-i', originalFullPath,
+            '-c', 'copy',
+            '-bsf:v', 'h264_mp4toannexb',
+            '-hls_time', '4',
+            '-hls_playlist_type', 'vod',
+            '-hls_segment_filename', path.join(sourceDir, 'segment_%03d.ts'),
+            path.join(sourceDir, 'index.m3u8'),
+          ]);
+          const srcSize = fs.statSync(originalFullPath).size;
+          const srcBandwidth = Math.max(
+            100_000,
+            Math.round((srcSize * 8) / Math.max(1, meta.duration || 10))
+          );
+          variants.push({
+            label: 'source',
+            bandwidth: srcBandwidth,
+            width: meta.width,
+            height: meta.height,
+          });
+          console.log('[Transcoder] Original source added to HLS ladder (lossless, full quality).');
+        } catch (srcErr) {
+          console.warn('[Transcoder] HLS source remux skipped (codec not TS-compatible):', srcErr);
+        }
+      }
+
       if (variants.length >= 2) {
         const masterLines = ['#EXTM3U', '#EXT-X-VERSION:3'];
         for (const v of variants) {
@@ -359,23 +431,39 @@ export class TranscoderService {
           `[Transcoder] HLS multi-variant ladder ready for video #${videoId}: ${variants.map((v) => v.label).join(', ')}`
         );
       } else {
-        // فقط یک کیفیت آماده شده → HLS ساده از فایل اصلی (رفتار قبلی)
+        // Only one rendition is ready → build a simple HLS playlist from the
+        // original. Remux first (no re-encode, no quality loss); fall back to
+        // transcoding only if the source codecs are not HLS-compatible.
         const hlsMasterPath = path.join(videoHlsDir, 'master.m3u8');
         const hlsSegmentPath = path.join(videoHlsDir, 'segment_%03d.ts');
 
-        await this.runFfmpeg([
-          '-y',
-          '-i', originalFullPath,
-          '-c:v', 'libx264',
-          '-crf', '24',
-          '-preset', 'veryfast',
-          '-c:a', 'aac',
-          '-b:a', '128k',
-          '-hls_time', '4',
-          '-hls_playlist_type', 'vod',
-          '-hls_segment_filename', hlsSegmentPath,
-          hlsMasterPath,
-        ]);
+        try {
+          await this.runFfmpeg([
+            '-y',
+            '-i', originalFullPath,
+            '-c', 'copy',
+            '-bsf:v', 'h264_mp4toannexb',
+            '-hls_time', '4',
+            '-hls_playlist_type', 'vod',
+            '-hls_segment_filename', hlsSegmentPath,
+            hlsMasterPath,
+          ]);
+        } catch (remuxErr) {
+          console.warn('[Transcoder] HLS remux failed, transcoding instead (quality-preserving CRF).');
+          await this.runFfmpeg([
+            '-y',
+            '-i', originalFullPath,
+            '-c:v', 'libx264',
+            '-crf', '18',
+            '-preset', 'medium',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-hls_time', '4',
+            '-hls_playlist_type', 'vod',
+            '-hls_segment_filename', hlsSegmentPath,
+            hlsMasterPath,
+          ]);
+        }
         details.hls = 'completed';
       }
     } catch (hlsErr) {

@@ -11,6 +11,11 @@ import { db } from './server/db/database.ts';
 import { runMigrations } from './server/db/schema.ts';
 import { seedDatabase } from './server/db/seed.ts';
 import { TranscoderService } from './server/services/transcoder.service.ts';
+import {
+  ensureTransferEngine,
+  proxyToTransferEngine,
+  stopTransferEngine,
+} from './server/services/transfer.service.ts';
 
 import authRoutes from './server/routes/auth.routes.ts';
 import userRoutes from './server/routes/user.routes.ts';
@@ -55,6 +60,10 @@ async function startServer() {
     next();
   });
 
+  // Rust transfer engine proxy. Mounted before the body parsers on purpose:
+  // upload chunks are streamed straight through, never buffered by Express.
+  app.use('/api/transfer', proxyToTransferEngine);
+
   // Basic security and parsing middlewares
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -68,6 +77,16 @@ async function startServer() {
 
   // Start background worker
   TranscoderService.startWorker();
+
+  // Start the Rust upload/download engine (non-fatal if it is unavailable).
+  try {
+    const engineUp = await ensureTransferEngine();
+    if (!engineUp) {
+      console.warn('[Transfer] Continuing with the built-in Node upload/download handlers.');
+    }
+  } catch (err: any) {
+    console.warn('[Transfer] Engine startup error:', err?.message || err);
+  }
 
   // API Routes
   app.use('/api/auth', authRoutes);
@@ -113,37 +132,33 @@ async function startServer() {
 
   const describeListenError = (port: number, label: string, err: NodeJS.ErrnoException): string => {
     if (err.code === 'EADDRINUSE') {
-      return `[Server] پورت ${port} (${label}) توسط برنامه دیگری اشغال است — این پورت رد شد.`;
+      return `[Server] Port ${port} (${label}) is already in use by another process — skipping this port.`;
     }
     if (err.code === 'EACCES' || err.code === 'EPERM') {
       return (
-        `[Server] دسترسی به پورت ${port} (${label}) رد شد. ` +
-        `(ویندوز: معمولاً سرویس دیگری مثل IIS/SQL Reporting این پورت را گرفته است.)\n` +
-        `         برای باز کردن پورت در فایروال ویندوز:\n` +
+        `[Server] Permission denied for port ${port} (${label}). ` +
+        `(On Windows another service such as IIS/SQL Reporting usually owns it.)\n` +
+        `         To open the port in the Windows firewall:\n` +
         `         netsh advfirewall firewall add rule name="20Negar ${port}" dir=in action=allow protocol=TCP localport=${port}`
       );
     }
-    return `[Server] خطای گوش دادن روی پورت ${port} (${label}): ${err.message}`;
+    return `[Server] Failed to listen on port ${port} (${label}): ${err.message}`;
   };
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`=======================================================`);
-    console.log(`🎬 20Negar Video Management System is running!`);
-    console.log(`📡 URL: http://localhost:${PORT}`);
-    console.log(`👥 Seed Users:`);
-    console.log(`   - Admin:      admin1      / admin1`);
-    console.log(`   - Editor:     editor1     / editor1`);
-    console.log(`   - Supervisor: supervisor1 / supervisor1`);
+    console.log(`20Negar Video Management System is running.`);
+    console.log(`URL: http://localhost:${PORT}`);
     console.log(`=======================================================`);
 
-    // پورت‌های استاندارد 80/443: VPN ها معمولاً فقط ترافیک این پورت‌ها را عبور می‌دهند،
-    // بنابراین با روشن بودن VPN هم سایت قابل دسترسی می‌ماند.
+    // Standard ports 80/443: VPNs usually only pass traffic on these ports,
+    // so the site stays reachable while a VPN is active.
     if (ENABLE_STANDARD_PORTS) {
       if (HTTP_PORT !== PORT) {
         const httpServer = http.createServer(app);
         httpServer.on('error', (err: NodeJS.ErrnoException) => console.warn(describeListenError(HTTP_PORT, 'HTTP', err)));
         httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
-          console.log(`[Server] ✅ پورت استاندارد HTTP  ${HTTP_PORT} فعال شد (دسترسی با VPN)`);
+          console.log(`[Server] Standard HTTP port ${HTTP_PORT} is active (VPN reachable).`);
         });
         extraServers.push(httpServer);
       }
@@ -154,8 +169,8 @@ async function startServer() {
         secureServer.on('error', (err: NodeJS.ErrnoException) => console.warn(describeListenError(SECURE_PORT, 'HTTPS', err)));
         secureServer.listen(SECURE_PORT, '0.0.0.0', () => {
           console.log(
-            `[Server] ✅ پورت استاندارد ${SECURE_PORT} ${tlsMaterial ? 'HTTPS' : 'HTTP'} فعال شد (دسترسی با VPN)` +
-              (tlsMaterial ? ` — گواهی خودامضا؛ مرورگر یک بار هشدار می‌دهد.` : '')
+            `[Server] Standard ${SECURE_PORT} ${tlsMaterial ? 'HTTPS' : 'HTTP'} port is active (VPN reachable).` +
+              (tlsMaterial ? ` Self-signed certificate; the browser will warn once.` : '')
           );
         });
         extraServers.push(secureServer);
@@ -165,13 +180,13 @@ async function startServer() {
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     console.error(describeListenError(PORT, 'main', err));
-    console.error('[Server] راه‌اندازی سرور اصلی ناموفق بود.');
+    console.error('[Server] Failed to start the main server.');
     process.exit(1);
   });
 
-  // ری‌استارت پس از بروزرسانی اجباری (فیچر ۲)
+  // Restart after a forced update.
   UpdateService.setRestarter(() => {
-    console.log('[Update] در حال بستن سرور فعلی و اجرای نسخه بروزرسانی‌شده...');
+    console.log('[Update] Closing the current server and starting the updated version...');
     try {
       for (const s of extraServers) s.close();
       server.close();
@@ -188,21 +203,21 @@ async function startServer() {
       const startupUpdate = await UpdateService.applyUpdate({ npmInstall: true });
       if (startupUpdate.changed) {
         if (process.env.FREEBUFF_UPDATE_RESTARTED === '1') {
-          console.warn('[Update] بروزرسانی اعمال شد اما ری‌استارت خودکار تکرار نمی‌شود. لطفاً سرور را دستی ری‌استارت کنید.');
+          console.warn('[Update] Update applied, but the automatic restart will not repeat. Please restart the server manually.');
         } else {
-          console.log(`[Update] بروزرسانی اعمال شد (${startupUpdate.filesChanged} فایل). ری‌استارت در ۳ ثانیه دیگر...`);
+          console.log(`[Update] Update applied (${startupUpdate.filesChanged} files). Restarting in 3 seconds...`);
           setTimeout(() => {
             UpdateService.spawnSelf();
             process.exit(0);
           }, 3000);
         }
       } else if (startupUpdate.error) {
-        console.warn(`[Update] بروزرسانی خودکار انجام نشد: ${startupUpdate.error}`);
+        console.warn(`[Update] Automatic update did not complete: ${startupUpdate.error}`);
       } else {
-        console.log('[Update] نسخه وب‌اپ با ریپوزیتوری GitHub هم‌سان است.');
+        console.log('[Update] The web app is in sync with the GitHub repository.');
       }
     } catch (err: any) {
-      console.warn('[Update] خطای بروزرسانی خودکار:', err?.message || err);
+      console.warn('[Update] Automatic update error:', err?.message || err);
     }
   }
 
@@ -210,6 +225,7 @@ async function startServer() {
   const shutdown = () => {
     console.log('[Server] Gracefully shutting down...');
     TranscoderService.stopWorker();
+    stopTransferEngine();
     db.persistImmediate();
     for (const s of extraServers) {
       try {

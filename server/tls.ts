@@ -66,12 +66,12 @@ export function ensureTlsMaterial(): { key: Buffer; cert: Buffer } | null {
     execFileSync('openssl', args, { stdio: 'ignore' });
 
     if (fs.existsSync(KEY_PATH) && fs.existsSync(CERT_PATH)) {
-      console.log(`[TLS] گواهی HTTPS خودامضا ساخته شد: ${CERT_PATH}`);
+      console.log(`[TLS] Self-signed HTTPS certificate created: ${CERT_PATH}`);
       return { key: fs.readFileSync(KEY_PATH), cert: fs.readFileSync(CERT_PATH) };
     }
     return null;
   } catch (err: any) {
-    console.warn('[TLS] ساخت گواهی HTTPS ممکن نشد (openssl در دسترس نیست):', err?.message || err);
+    console.warn('[TLS] Could not create the HTTPS certificate (openssl unavailable):', err?.message || err);
     return null;
   }
 }

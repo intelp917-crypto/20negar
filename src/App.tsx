@@ -134,6 +134,10 @@ const MainLayout: React.FC = () => {
       return <UsersPage roleFilter="Supervisor" />;
     }
 
+    if (activeTab === 'cameramen') {
+      return <UsersPage roleFilter="Cameraman" />;
+    }
+
     // SuperAdmin View
     if (user.role === 'SuperAdmin') {
       if (activeTab === 'superadmin') {
@@ -178,6 +182,17 @@ const MainLayout: React.FC = () => {
           onWatchVideo={handleWatchVideo}
           onViewDetails={handleViewDetails}
           defaultView="approved-only"
+        />
+      );
+    }
+
+    // Cameraman View — raw footage uploader; editors can see these files.
+    if (user.role === 'Cameraman') {
+      return (
+        <EditorDashboard
+          onWatchVideo={handleWatchVideo}
+          onViewDetails={handleViewDetails}
+          activeFilter={'all'}
         />
       );
     }

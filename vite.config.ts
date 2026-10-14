@@ -1,14 +1,39 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import path from 'path';
-import {defineConfig} from 'vite';
+import path from 'node:path';
+import { defineConfig } from 'vite';
+
+// `import.meta.dirname` replaces `__dirname` (which Vite's native config loader
+// warns about and will stop supporting).
+const projectRoot = import.meta.dirname ?? process.cwd();
 
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(projectRoot, '.'),
+      },
+    },
+    build: {
+      // The app's own code is ~250 kB; the only larger chunk is hls.js, a single
+      // third-party library that is loaded lazily the first time a player opens.
+      // The threshold is raised just past it so build output stays warning-free
+      // without masking any real problem.
+      chunkSizeWarningLimit: 700,
+      // Split large third-party libraries out of the main bundle so the app
+      // shell stays small and cacheable.
+      rollupOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+              { name: 'vendor-hls', test: /node_modules[\\/]hls\.js[\\/]/ },
+              { name: 'vendor-motion', test: /node_modules[\\/](motion|framer-motion)[\\/]/ },
+              { name: 'vendor-icons', test: /node_modules[\\/]lucide-react[\\/]/ },
+            ],
+          },
+        },
       },
     },
     server: {

@@ -153,7 +153,7 @@ cleanupExpired();
 setInterval(cleanupExpired, 60 * 60 * 1000).unref?.();
 
 // POST /api/chunked-uploads - ایجاد نشست آپلود
-router.post('/', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
+router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
   try {
     const { fileName, fileSize, mimeType, chunkSize } = req.body || {};
     if (!fileName || !String(fileName).trim()) {
@@ -209,7 +209,7 @@ router.post('/', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']), (
 });
 
 // GET /api/chunked-uploads/:id - وضعیت و رزوم آپلود
-router.get('/:id', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
+router.get('/:id', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
   const meta = loadSession(req.params.id);
   if (!meta || (meta.userId !== req.user!.id && req.user!.role !== 'SuperAdmin')) {
     res.status(404).json({ error: 'نشست آپلود یافت نشد یا منقضی شده است.' });
@@ -229,7 +229,7 @@ router.get('/:id', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']),
 router.put(
   '/:id/chunk/:index',
   authenticate,
-  requireRole(['Editor', 'SuperAdmin', 'Admin']),
+  requireRole(['Editor', 'Cameraman', 'SuperAdmin', 'Admin']),
   express.raw({ type: '*/*', limit: MAX_CHUNK_SIZE + 1024 }),
   (req: Request, res: Response): void => {
     try {
@@ -289,7 +289,7 @@ router.put(
 );
 
 // POST /api/chunked-uploads/:id/complete - تکمیل آپلود؛ فایل آماده است.
-router.post('/:id/complete', authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
+router.post('/:id/complete', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
   const meta = loadSession(req.params.id);
   if (!meta || (meta.userId !== req.user!.id && req.user!.role !== 'SuperAdmin')) {
     res.status(404).json({ error: 'نشست آپلود یافت نشد یا منقضی شده است.' });

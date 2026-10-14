@@ -21,6 +21,9 @@ export const UsersPage: React.FC<UsersPageProps> = ({ roleFilter }) => {
         } else if (roleFilter === 'Supervisor') {
           const list = await api.getSupervisors();
           setUsers(list);
+        } else if (roleFilter === 'Cameraman') {
+          const list = await api.getCameramen();
+          setUsers(list);
         } else {
           const list = await api.getAllUsers();
           setUsers(list);
@@ -55,6 +58,12 @@ export const UsersPage: React.FC<UsersPageProps> = ({ roleFilter }) => {
             ناظر کیفی
           </span>
         );
+      case 'Cameraman':
+        return (
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+            تصویربردار
+          </span>
+        );
       case 'Editor':
       default:
         return (
@@ -68,6 +77,7 @@ export const UsersPage: React.FC<UsersPageProps> = ({ roleFilter }) => {
   const getRoleTitle = () => {
     if (roleFilter === 'Editor') return 'تدوین‌گران استودیو';
     if (roleFilter === 'Supervisor') return 'ناظران کیفی و سرپرستان';
+    if (roleFilter === 'Cameraman') return 'تصویربرداران استودیو';
     return 'دایرکتوری پرسنل استودیو';
   };
 

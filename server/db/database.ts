@@ -37,7 +37,7 @@ class RelationalDatabase {
 
   private ensureDb(): SqlJsDatabase {
     if (!this.db) {
-      throw new Error('پایگاه داده هنوز بارگذاری نشده است. لطفاً منتظر بمانید.');
+      throw new Error('The database has not been initialized yet. Please wait.');
     }
     return this.db;
   }
@@ -49,7 +49,7 @@ class RelationalDatabase {
       const buffer = Buffer.from(data);
       fs.writeFileSync(DB_FILE_PATH, buffer);
     } catch (err) {
-      console.error('خطا در ذخیره‌سازی فایل دیتابیس بر روی دیسک:', err);
+      console.error('[Database] Failed to persist the database file to disk:', err);
     }
   }
 

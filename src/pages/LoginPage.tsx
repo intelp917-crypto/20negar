@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext.tsx';
-import { Film, Lock, User, ArrowLeft, Crown, Sparkles } from 'lucide-react';
-import { UserRole } from '../types/index.ts';
+import { Film, Lock, User, ArrowLeft } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
@@ -26,18 +25,6 @@ export const LoginPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleQuickFill = (role: UserRole) => {
-    const creds: Record<UserRole, { u: string; p: string }> = {
-      SuperAdmin: { u: 'superadmin', p: 'superadmin' },
-      Admin: { u: 'admin1', p: 'admin1' },
-      Editor: { u: 'editor1', p: 'editor1' },
-      Supervisor: { u: 'supervisor1', p: 'supervisor1' },
-    };
-    setUsername(creds[role].u);
-    setPassword(creds[role].p);
-    setError(null);
   };
 
   return (
@@ -75,7 +62,7 @@ export const LoginPage: React.FC = () => {
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="superadmin, admin1, editor1 یا supervisor1"
+                  placeholder="نام کاربری خود را وارد کنید"
                   className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl pr-10 pl-4 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all font-mono"
                   dir="ltr"
                 />
@@ -123,55 +110,6 @@ export const LoginPage: React.FC = () => {
               )}
             </button>
           </form>
-
-          {/* Quick Demo Credential Selectors */}
-          <div className="mt-7 pt-5 border-t border-zinc-800/80">
-            <div className="flex items-center justify-between text-xs text-zinc-400 mb-3">
-              <span className="flex items-center gap-1.5 font-bold text-zinc-300 text-xs">
-                <Sparkles className="w-3.5 h-3.5 text-purple-400" /> حساب‌های پیش‌فرض سامانه
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => handleQuickFill('SuperAdmin')}
-                className="p-2.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800 border border-amber-500/40 text-right transition-colors group"
-              >
-                <div className="text-[11px] font-bold text-amber-300 flex items-center gap-1">
-                  <Crown className="w-3 h-3 text-amber-400" /> مدیرکل
-                </div>
-                <div className="text-[10px] font-mono text-zinc-400 mt-0.5">superadmin / superadmin</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickFill('Editor')}
-                className="p-2.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-right transition-colors group"
-              >
-                <div className="text-[11px] font-bold text-sky-400">تدوین‌گر</div>
-                <div className="text-[10px] font-mono text-zinc-500 mt-0.5">editor1 / editor1</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickFill('Supervisor')}
-                className="p-2.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-right transition-colors group"
-              >
-                <div className="text-[11px] font-bold text-amber-400">ناظر کیفی</div>
-                <div className="text-[10px] font-mono text-zinc-500 mt-0.5">supervisor1 / supervisor1</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickFill('Admin')}
-                className="p-2.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-right transition-colors group"
-              >
-                <div className="text-[11px] font-bold text-purple-400">ادمین</div>
-                <div className="text-[10px] font-mono text-zinc-500 mt-0.5">admin1 / admin1</div>
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>

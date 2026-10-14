@@ -1,0 +1,22 @@
+[package]
+name = "negartransfer"
+version = "1.0.0"
+edition = "2021"
+description = "High-performance upload/download engine for 20Negar Studio"
+
+[[bin]]
+name = "negartransfer"
+path = "src/main.rs"
+
+[dependencies]
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+serde_json = "1"
+hex = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

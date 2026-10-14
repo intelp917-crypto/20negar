@@ -81,6 +81,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       { id: 'rejected', label: 'رد شده / نیازمند اصلاح', icon: <XCircle className="w-4 h-4" /> },
       { id: 'docs', label: 'راهنمای استودیو', icon: <BookOpen className="w-4 h-4" /> },
     ];
+  } else if (role === 'Cameraman') {
+    navItems = [
+      { id: 'dashboard', label: 'پیشخوان تصویربردار', icon: <LayoutDashboard className="w-4 h-4" /> },
+      { id: 'my-videos', label: 'فایل‌های بارگذاری‌شده من', icon: <Film className="w-4 h-4" /> },
+      {
+        id: 'upload-video',
+        label: 'بارگذاری فایل جدید',
+        icon: <UploadCloud className="w-4 h-4" />,
+        action: onOpenUpload,
+      },
+      { id: 'docs', label: 'راهنمای استودیو', icon: <BookOpen className="w-4 h-4" /> },
+    ];
   } else if (role === 'Supervisor') {
     navItems = [
       { id: 'dashboard', label: 'پیشخوان نظارت', icon: <LayoutDashboard className="w-4 h-4" /> },
@@ -106,6 +118,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       case 'SuperAdmin': return 'مدیرکل';
       case 'Editor': return 'تدوین‌گر';
       case 'Supervisor': return 'ناظر کیفی';
+      case 'Cameraman': return 'تصویربردار';
       case 'Admin': return 'ادمین';
       default: return r;
     }
@@ -172,7 +185,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Footer / Action */}
         <div className="p-4 border-t border-zinc-800/80 space-y-2">
-          {role === 'Editor' && (
+          {(role === 'Editor' || role === 'Cameraman') && (
             <button
               onClick={() => {
                 onOpenUpload?.();
@@ -181,7 +194,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold shadow-md shadow-purple-950/40 flex items-center justify-center gap-2 mb-2 transition-all"
             >
               <UploadCloud className="w-4 h-4" />
-              بارگذاری ویدیو جدید
+              {role === 'Cameraman' ? 'بارگذاری فایل جدید' : 'بارگذاری ویدیو جدید'}
             </button>
           )}
 

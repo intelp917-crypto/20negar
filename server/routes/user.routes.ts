@@ -19,6 +19,16 @@ router.get('/editors', authenticate, (_req: Request, res: Response): void => {
   }
 });
 
+// GET /api/cameramen - Active cameramen list (تصویربرداران)
+router.get('/cameramen', authenticate, (_req: Request, res: Response): void => {
+  try {
+    const cameramen = AuthService.getUsersByRole('Cameraman');
+    res.json(cameramen);
+  } catch (err: any) {
+    res.status(500).json({ error: 'خطا در دریافت لیست تصویربرداران.' });
+  }
+});
+
 // GET /api/supervisors - Active supervisors list
 router.get('/supervisors', authenticate, (_req: Request, res: Response): void => {
   try {
@@ -58,7 +68,7 @@ router.post('/users', authenticate, requireRole(['SuperAdmin', 'Admin']), async 
       return;
     }
 
-    if (!['SuperAdmin', 'Admin', 'Editor', 'Supervisor'].includes(role)) {
+    if (!['SuperAdmin', 'Admin', 'Editor', 'Supervisor', 'Cameraman'].includes(role)) {
       res.status(400).json({ error: 'نقش کاربری وارد شده معتبر نیست.' });
       return;
     }

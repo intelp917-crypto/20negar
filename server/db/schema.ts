@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('SuperAdmin', 'Admin', 'Editor', 'Supervisor')),
+  role TEXT NOT NULL CHECK(role IN ('SuperAdmin', 'Admin', 'Editor', 'Supervisor', 'Cameraman')),
   display_name TEXT NOT NULL,
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS videos (
   editor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   supervisor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   status TEXT NOT NULL CHECK(status IN ('Uploaded', 'PendingReview', 'Approved', 'Rejected')) DEFAULT 'Uploaded',
   processing_status TEXT NOT NULL CHECK(processing_status IN ('Uploading', 'Processing', 'Ready', 'ProcessingFailed')) DEFAULT 'Processing',
   duration REAL DEFAULT 0,
@@ -105,35 +106,41 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_user_comp ON audit_logs(user_id, creat
 `;
 
 export function runMigrations(): void {
-  // Check if users table needs migration for SuperAdmin
+  // Migration: users.role — ensure every supported role is allowed by the CHECK constraint.
   try {
     const tableInfo = db.queryOne<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'");
-    if (tableInfo && !tableInfo.sql.includes('SuperAdmin')) {
-      console.log('[Migration] Migrating users table to support SuperAdmin role...');
+    const requiredRoles = ['SuperAdmin', 'Admin', 'Editor', 'Supervisor', 'Cameraman'];
+    const missingRoles = tableInfo
+      ? requiredRoles.filter((r) => !tableInfo.sql.includes(`'${r}'`))
+      : [];
+
+    if (tableInfo && missingRoles.length > 0) {
+      console.log(`[Migration] Rebuilding users table to allow roles: ${missingRoles.join(', ')}`);
       db.exec(`
         PRAGMA foreign_keys = OFF;
         CREATE TABLE users_migrated (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           username TEXT UNIQUE NOT NULL,
           password_hash TEXT NOT NULL,
-          role TEXT NOT NULL CHECK(role IN ('SuperAdmin', 'Admin', 'Editor', 'Supervisor')),
+          role TEXT NOT NULL CHECK(role IN ('SuperAdmin', 'Admin', 'Editor', 'Supervisor', 'Cameraman')),
           display_name TEXT NOT NULL,
           is_active INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
-        INSERT INTO users_migrated SELECT * FROM users;
+        INSERT INTO users_migrated (id, username, password_hash, role, display_name, is_active, created_at, updated_at)
+          SELECT id, username, password_hash, role, display_name, is_active, created_at, updated_at FROM users;
         DROP TABLE users;
         ALTER TABLE users_migrated RENAME TO users;
         PRAGMA foreign_keys = ON;
       `);
-      console.log('[Migration] users table migrated successfully to include SuperAdmin.');
+      console.log('[Migration] users table rebuilt successfully.');
     }
   } catch (err) {
     console.warn('[Migration] Notice on schema check:', err);
   }
 
-  // Migration: videos.admin_id (انتساب ویدیو به ادمین مشخص)
+  // Migration: videos.admin_id (assign a video to a specific admin).
   try {
     db.query('SELECT admin_id FROM videos LIMIT 1');
   } catch {
@@ -143,6 +150,19 @@ export function runMigrations(): void {
       console.log('[Migration] videos.admin_id column added successfully.');
     } catch (err) {
       console.warn('[Migration] Could not add videos.admin_id:', err);
+    }
+  }
+
+  // Migration: videos.uploaded_by_id (records the Cameraman uploader, if any).
+  try {
+    db.query('SELECT uploaded_by_id FROM videos LIMIT 1');
+  } catch {
+    try {
+      console.log('[Migration] Adding videos.uploaded_by_id column for cameraman uploads...');
+      db.exec('ALTER TABLE videos ADD COLUMN uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+      console.log('[Migration] videos.uploaded_by_id column added successfully.');
+    } catch (err) {
+      console.warn('[Migration] Could not add videos.uploaded_by_id:', err);
     }
   }
 

@@ -715,6 +715,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   <option value="SuperAdmin">مدیرکل</option>
                   <option value="Editor">تدوین‌گر</option>
                   <option value="Supervisor">ناظر کیفی</option>
+                  <option value="Cameraman">تصویربردار</option>
                   <option value="Admin">ادمین</option>
                 </select>
               </div>
@@ -813,6 +814,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   <option value="SuperAdmin">مدیرکل</option>
                   <option value="Editor">تدوین‌گر</option>
                   <option value="Supervisor">ناظر کیفی</option>
+                  <option value="Cameraman">تصویربردار</option>
                   <option value="Admin">ادمین</option>
                 </select>
               </div>

@@ -2,7 +2,8 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 
-dotenv.config();
+// `quiet` keeps dotenv from printing banner/tips on every server start.
+dotenv.config({ quiet: true });
 
 export const PORT = parseInt(process.env.PORT || '3000', 10);
 

@@ -16,7 +16,9 @@ import {
   AlertCircle,
   RotateCcw as ReloadIcon,
 } from 'lucide-react';
-import Hls from 'hls.js';
+// Type-only import: hls.js is loaded on demand (see setupSource) so it never
+// bloats the initial bundle. This keeps the app shell small on phones.
+import type HlsType from 'hls.js';
 import { api, getStoredToken } from '../api/client.ts';
 import { VideoQuality } from '../types/index.ts';
 
@@ -52,7 +54,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
+  const hlsRef = useRef<HlsType | null>(null);
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isBuffering, setIsBuffering] = useState<boolean>(true);
@@ -172,42 +174,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
    * معیار: ارتفاع واقعی ویدیوی در حال پخش (videoHeight) تا همیشه پایین‌تر از فعلی برویم.
    */
   const downgradeAutoQuality = useCallback((): boolean => {
-    if (selectedQuality !== 'Auto') return false;
-
-    const video = videoRef.current;
-    const currentHeight = video?.videoHeight || 0;
-    const named = qualitiesRef.current
-      .filter((q) => q.quality !== 'Original')
-      .sort((a, b) => b.height - a.height)
-      .map((q) => ({ name: String(q.quality), height: q.height }));
-
-    let next: string | null = null;
-    const currentTargetHeight = autoQualityRef.current
-      ? named.find((n) => n.name === autoQualityRef.current)?.height || 0
-      : 0;
-    const ceiling = Math.min(
-      currentHeight > 0 ? currentHeight : Number.POSITIVE_INFINITY,
-      currentTargetHeight > 0 ? currentTargetHeight : Number.POSITIVE_INFINITY
-    );
-    if (Number.isFinite(ceiling)) {
-      const lower = named.filter((q) => q.height < ceiling);
-      next = lower.length > 0 ? lower[0].name : null;
-    } else {
-      // ارتفاع نامشخص → از نردبان ایستا پایین برو
-      const ladder = ['Original', ...named.map((n) => n.name)];
-      const idx = ladder.indexOf(autoQualityRef.current ?? 'Original');
-      next = idx >= 0 ? ladder[idx + 1] ?? null : null;
-    }
-
-    if (!next) return false; // به پایین‌ترین کیفیت رسیده‌ایم
-
-    autoQualityRef.current = next;
-    setAutoQuality(next);
-    setAutoNotice(`سرعت پایین است؛ کیفیت به‌صورت خودکار به ${qualityLabel(next)} کاهش یافت.`);
-    if (autoNoticeTimerRef.current) window.clearTimeout(autoNoticeTimerRef.current);
-    autoNoticeTimerRef.current = window.setTimeout(() => setAutoNotice(null), 5000);
-    return true;
-  }, [selectedQuality]);
+    // کیفیت هرگز به‌صورت خودکار کاهش نمی‌یابد (الزام پروژه: حفظ کامل کیفیت منبع).
+    // کاهش کیفیت فقط با انتخاب دستی کاربر در منوی کیفیت ممکن است.
+    return false;
+  }, []);
 
   const availableQualityNames = ['Auto', ...qualities.map((q) => q.quality)];
   const speedOptions = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -275,11 +245,23 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       return;
     }
 
+    // hls.js (a large library) is fetched only when HLS playback is actually used.
+    let Hls: typeof HlsType;
+    try {
+      ({ default: Hls } = await import('hls.js'));
+    } catch {
+      fallbackToDirectMp4(autoTarget());
+      return;
+    }
+
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
         backBufferLength: 90,
+        // Never cap the level to the player size, and never drop quality
+        // automatically — the highest available rendition is used.
+        capLevelToPlayerSize: false,
         xhrSetup: (xhr) => {
           const token = getStoredToken();
           if (token) {
@@ -292,7 +274,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        hls.currentLevel = -1; // Auto adaptive bitrate mode based on network speed
+        // Pin playback to the highest available rendition (no auto downshift).
+        const highestLevel = Math.max(0, hls.levels.length - 1);
+        hls.currentLevel = highestLevel;
+        hls.loadLevel = highestLevel;
         setIsBuffering(false);
         if (savedCurrentTime > 0 && isFinite(savedCurrentTime)) {
           try {
@@ -761,8 +746,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     stallTimesRef.current = recent;
 
     if (recent.length >= 2) {
+      // Quality is intentionally never reduced automatically: the studio
+      // requires the original quality at all times. Buffering is preferred.
       stallTimesRef.current = [];
-      downgradeAutoQuality();
     }
   };
 

@@ -46,6 +46,108 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   return response.json();
 }
 
+/**
+ * آپلود پرسرعت با موتور راست (negartransfer):
+ * تکه‌ها همزمان و موازی ارسال و مستقیم روی offset خودشان در دیسک نوشته می‌شوند.
+ * در صورت در دسترس نبودن موتور، به‌صورت خودکار به آپلود TUS برمی‌گردد.
+ */
+const FAST_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB
+const FAST_PARALLELISM = 4;
+const FAST_MAX_RETRIES = 4;
+
+async function transferFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const token = getStoredToken();
+  const headers = new Headers(options.headers || {});
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(`/api/transfer${path}`, { ...options, headers });
+}
+
+async function fastUpload(
+  file: File,
+  _fields: Record<string, string>,
+  onProgress?: (percent: number) => void
+): Promise<string> {
+  const initRes = await transferFetch('/upload/init', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type || 'video/mp4',
+      chunkSize: FAST_CHUNK_SIZE,
+    }),
+  });
+
+  if (!initRes.ok) {
+    throw new Error(`Fast upload init failed (${initRes.status}).`);
+  }
+
+  const init = await initRes.json();
+  const uploadId: string = init.uploadId;
+  const chunkSize: number = init.chunkSize || FAST_CHUNK_SIZE;
+  const totalChunks: number = init.totalChunks;
+
+  if (!uploadId || !totalChunks) {
+    throw new Error('Fast upload session was rejected by the server.');
+  }
+
+  let nextIndex = 0;
+  let completed = 0;
+  let firstError: unknown = null;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = nextIndex++;
+      if (index >= totalChunks || firstError) return;
+
+      const start = index * chunkSize;
+      const end = Math.min(start + chunkSize, file.size);
+      const body = file.slice(start, end);
+
+      let attempt = 0;
+      for (;;) {
+        try {
+          const res = await transferFetch(`/upload/${uploadId}/chunk/${index}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body,
+          });
+          if (!res.ok) throw new Error(`chunk ${index} failed (${res.status})`);
+          break;
+        } catch (err) {
+          attempt += 1;
+          if (attempt > FAST_MAX_RETRIES) throw err;
+          await new Promise((r) => setTimeout(r, 400 * attempt));
+        }
+      }
+
+      completed += 1;
+      if (onProgress) {
+        onProgress(Math.min(99, Math.round((completed / totalChunks) * 100)));
+      }
+    }
+  };
+
+  try {
+    const workers = Array.from({ length: Math.min(FAST_PARALLELISM, totalChunks) }, worker);
+    await Promise.all(workers);
+  } catch (err) {
+    firstError = err;
+  }
+
+  if (firstError) throw firstError;
+
+  const completeRes = await transferFetch(`/upload/${uploadId}/complete`, { method: 'POST' });
+  if (!completeRes.ok) {
+    throw new Error(`Fast upload could not be finalized (${completeRes.status}).`);
+  }
+
+  if (onProgress) onProgress(100);
+  return uploadId;
+}
+
 // آپلود TUS (tus.io): تکه‌های ۱۶ مگابایتی، ازسره‌گیری بعد از قطعی و تلاش مجدد خودکار
 const TUS_CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB
 const TUS_RETRY_DELAYS = [0, 1000, 2000, 5000, 10000, 30000];
@@ -137,6 +239,7 @@ export const api = {
 
   // Users
   getEditors: () => request<User[]>('/api/editors'),
+  getCameramen: () => request<User[]>('/api/cameramen'),
   getSupervisors: () => request<User[]>('/api/supervisors'),
   getAdmins: () => request<User[]>('/api/admins'),
   getAllUsers: () => request<User[]>('/api/users'),
@@ -210,7 +313,15 @@ export const api = {
     formData.forEach((value, key) => {
       if (typeof value === 'string') fields[key] = value;
     });
-    return tusUpload(file, fields, onProgress).then((uploadId) =>
+    const upload = async (): Promise<string> => {
+      try {
+        return await fastUpload(file, fields, onProgress);
+      } catch (err) {
+        console.warn('[Upload] Fast engine unavailable, falling back to TUS:', err);
+        return tusUpload(file, fields, onProgress);
+      }
+    };
+    return upload().then((uploadId) =>
       request<Video>('/api/videos', {
         method: 'POST',
         body: JSON.stringify({ uploadId, ...fields }),
@@ -227,7 +338,15 @@ export const api = {
     formData.forEach((value, key) => {
       if (typeof value === 'string') fields[key] = value;
     });
-    return tusUpload(file, fields, onProgress).then((uploadId) =>
+    const upload = async (): Promise<string> => {
+      try {
+        return await fastUpload(file, fields, onProgress);
+      } catch (err) {
+        console.warn('[Upload] Fast engine unavailable, falling back to TUS:', err);
+        return tusUpload(file, fields, onProgress);
+      }
+    };
+    return upload().then((uploadId) =>
       request<Video>(`/api/videos/${videoId}/versions`, {
         method: 'POST',
         body: JSON.stringify({ uploadId, ...fields }),

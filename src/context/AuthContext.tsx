@@ -8,11 +8,11 @@ interface AuthContextType {
   isLoading: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  switchUserFast: (role: UserRole) => Promise<void>;
   isSuperAdmin: boolean;
   isAdmin: boolean;
   isEditor: boolean;
   isSupervisor: boolean;
+  isCameraman: boolean;
   refreshUser: () => Promise<void>;
 }
 
@@ -70,16 +70,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const switchUserFast = async (role: UserRole) => {
-    const creds: Record<UserRole, { u: string; p: string }> = {
-      SuperAdmin: { u: 'superadmin', p: 'superadmin' },
-      Admin: { u: 'admin1', p: 'admin1' },
-      Editor: { u: 'editor1', p: 'editor1' },
-      Supervisor: { u: 'supervisor1', p: 'supervisor1' },
-    };
-    await login(creds[role].u, creds[role].p);
-  };
-
   const refreshUser = async () => {
     await fetchCurrentUser();
   };
@@ -88,6 +78,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const isAdmin = user?.role === 'Admin' || isSuperAdmin;
   const isEditor = user?.role === 'Editor';
   const isSupervisor = user?.role === 'Supervisor';
+  const isCameraman = user?.role === 'Cameraman';
 
   return (
     <AuthContext.Provider
@@ -97,11 +88,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         login,
         logout,
-        switchUserFast,
         isSuperAdmin,
         isAdmin,
         isEditor,
         isSupervisor,
+        isCameraman,
         refreshUser,
       }}
     >

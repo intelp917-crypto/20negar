@@ -8,6 +8,7 @@ import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
 import { videoUpload } from '../middleware/upload.middleware.ts';
 import { PRIVATE_VIDEOS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
 import { AuditService } from '../services/audit.service.ts';
+import { streamFromTransferEngine } from '../services/transfer.service.ts';
 import { loadSession as loadChunkSession, dataFile as chunkDataFile, cleanupSession as cleanupChunkSession } from './upload.routes.ts';
 
 const router = Router();
@@ -114,11 +115,11 @@ router.get('/:id/job-status', authenticate, (req: Request, res: Response): void 
   }
 });
 
-// POST /api/videos - Upload video (Editor only)
+// POST /api/videos - Upload video (Editor or Cameraman)
 router.post(
   '/',
   authenticate,
-  requireRole(['Editor']),
+  requireRole(['Editor', 'Cameraman']),
   videoUpload.single('video'),
   async (req: Request, res: Response): Promise<void> => {
     let chunkTempPath: string | null = null;
@@ -165,6 +166,7 @@ router.post(
       await fileStorage.storeLocalFile(tempPath, destinationKey);
       if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
 
+      const isCameraman = req.user!.role === 'Cameraman';
       const created = VideoService.createVideo({
         title: title.trim(),
         originalFilename: originalName,
@@ -172,6 +174,7 @@ router.post(
         fileSize,
         editorId: req.user!.id,
         supervisorId: parseInt(supervisorId, 10),
+        uploadedById: isCameraman ? req.user!.id : null,
         ipAddress: req.ip,
       });
 
@@ -424,10 +427,17 @@ router.get('/:id/stream', authenticate, async (req: Request, res: Response): Pro
     }
 
     const fullPath = fileStorage.getPhysicalPath(relativeFilePath);
-    const targetFile = fs.existsSync(fullPath) ? fullPath : fileStorage.getPhysicalPath(video.originalPath);
+    const qualityExists = fs.existsSync(fullPath);
+    const targetFile = qualityExists ? fullPath : fileStorage.getPhysicalPath(video.originalPath);
 
     if (!fs.existsSync(targetFile)) {
       res.status(404).json({ error: 'فایل ویدیو در حافظه ذخیره‌سازی یافت نشد.' });
+      return;
+    }
+
+    // Fast path: let the Rust engine stream the file (full Range support).
+    const storageKey = qualityExists ? relativeFilePath : video.originalPath;
+    if (await streamFromTransferEngine(req, res, storageKey, { attachment: false })) {
       return;
     }
 
@@ -479,7 +489,7 @@ router.get(
     }
     authenticate(req, res, next);
   },
-  (req: Request, res: Response): void => {
+  async (req: Request, res: Response): Promise<void> => {
     try {
       const videoId = parseInt(req.params.id, 10);
       if (req.user) {
@@ -505,6 +515,12 @@ router.get(
       } else if (cleanSubPath.endsWith('.ts')) {
         res.setHeader('Content-Type', 'video/mp2t');
         res.setHeader('Cache-Control', 'public, max-age=86400');
+      }
+
+      // Fast path: segments are numerous small requests — hand them to the Rust engine.
+      const hlsKey = `hls/video_${videoId}/${cleanSubPath.replace(/\\/g, '/')}`;
+      if (await streamFromTransferEngine(req, res, hlsKey, { attachment: false })) {
+        return;
       }
 
       fs.createReadStream(hlsFilePath).pipe(res);
@@ -543,7 +559,8 @@ router.get('/:id/download', authenticate, async (req: Request, res: Response): P
     }
 
     const fullPath = fileStorage.getPhysicalPath(relativeFilePath);
-    const targetFile = fs.existsSync(fullPath) ? fullPath : fileStorage.getPhysicalPath(video.originalPath);
+    const qualityExists = fs.existsSync(fullPath);
+    const targetFile = qualityExists ? fullPath : fileStorage.getPhysicalPath(video.originalPath);
 
     if (!fs.existsSync(targetFile)) {
       res.status(404).json({ error: 'فایل ویدیو در حافظه ذخیره‌سازی یافت نشد.' });
@@ -558,6 +575,17 @@ router.get('/:id/download', authenticate, async (req: Request, res: Response): P
       `کاربر ${req.user!.displayName} نسخه ${requestedQuality} ویدیوی "${video.title}" را دانلود کرد.`,
       req.ip
     );
+
+    // Fast path: ranged streaming download served by the Rust engine.
+    const downloadKey = qualityExists ? relativeFilePath : video.originalPath;
+    if (
+      await streamFromTransferEngine(req, res, downloadKey, {
+        attachment: true,
+        filename: downloadFilename,
+      })
+    ) {
+      return;
+    }
 
     const stat = fs.statSync(targetFile);
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadFilename)}"`);

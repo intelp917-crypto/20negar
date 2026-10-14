@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import { db } from '../db/database.ts';
 import { JWT_SECRET, JWT_EXPIRES_IN } from '../config.ts';
 
-export type UserRole = 'SuperAdmin' | 'Admin' | 'Editor' | 'Supervisor';
+export type UserRole = 'SuperAdmin' | 'Admin' | 'Editor' | 'Supervisor' | 'Cameraman';
 
 export interface UserEntity {
   id: number;

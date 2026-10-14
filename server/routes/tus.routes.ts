@@ -80,7 +80,7 @@ export const tusServer = new TusServer({
     if (!user) {
       throw tusError(401, 'احراز هویت الزامی است. توکن نامعتبر یا منقضی شده است.');
     }
-    if (user.role !== 'Editor' && user.role !== 'SuperAdmin' && user.role !== 'Admin') {
+    if (user.role !== 'Editor' && user.role !== 'Cameraman' && user.role !== 'SuperAdmin' && user.role !== 'Admin') {
       throw tusError(403, `دسترسی غیرمجاز. نقش '${user.role}' دسترسی به بارگذاری ویدیو ندارد.`);
     }
 
@@ -145,7 +145,7 @@ export const tusServer = new TusServer({
  *  بخش مسیر می‌خواند و Location پاسخ را با path تنظیم‌شده above می‌سازد.)
  */
 const router = Router();
-router.use(authenticate, requireRole(['Editor', 'SuperAdmin', 'Admin']));
+router.use(authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin', 'Admin']));
 router.use((req: Request, res: Response): void => {
   tusServer.handle(req, res).catch((err: any) => {
     console.error('[TUS] handle error:', err?.message || err);
