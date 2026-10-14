@@ -36,22 +36,26 @@ export interface UpdateResult {
  */
 function runNpmInstall(): { ok: boolean; output: string; attempts: number } {
   const isWin = process.platform === 'win32';
+  // Windows exposes npm through npm.cmd.  Using `shell: true` with the bare
+  // `npm` name is sensitive to the server's inherited shell/PATH and can
+  // return a generic npm-install failure even when Node is installed.
+  const npmCommand = isWin ? 'npm.cmd' : 'npm';
   let output = '';
   const maxAttempts = 3;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const r = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--loglevel=error'], {
+    const r = spawnSync(npmCommand, ['install', '--no-audit', '--no-fund', '--loglevel=error'], {
       cwd: PROJECT_ROOT,
       encoding: 'utf8',
       timeout: 10 * 60 * 1000,
       windowsHide: true,
-      shell: isWin,
       env: { ...process.env, NO_UPDATE_NOTIFIER: '1' },
     });
 
     const stdout = (r.stdout || '').toString().trim();
     const stderr = (r.stderr || '').toString().trim();
     const spawnError = r.error ? String((r.error as any).code || r.error.message || r.error) : '';
+    const timedOut = (r.error as any)?.code === 'ETIMEDOUT' || r.signal;
     const attemptOutput = [spawnError, stderr, stdout].filter(Boolean).join('\n').trim();
 
     if (r.status === 0 && !r.error) {
@@ -59,7 +63,9 @@ function runNpmInstall(): { ok: boolean; output: string; attempts: number } {
       return { ok: true, output: attemptOutput, attempts: attempt };
     }
 
-    output = attemptOutput || `npm install exited with code ${r.status}.`;
+    output = attemptOutput || (timedOut
+      ? 'npm install timed out after 10 minutes.'
+      : `npm install exited with code ${r.status}.`);
     console.error(`[Update] npm install attempt ${attempt}/${maxAttempts} failed: ${output.slice(-400)}`);
 
     // خطاهای موقت را دوباره امتحان کن؛ خطای spawn (npm پیدا نشد) را هم یک بار دیگر
@@ -185,12 +191,12 @@ export class UpdateService {
   /** ری‌استارت جداشده با همان دستور (npm run dev) در همان کنسول */
   static spawnSelf(): void {
     try {
-      spawn('npm', ['run', 'dev'], {
+      spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'dev'], {
         cwd: PROJECT_ROOT,
         stdio: 'inherit',
-        shell: process.platform === 'win32',
+        shell: false,
         detached: true,
-        env: { ...process.env, FREEBUFF_UPDATE_RESTARTED: '1' },
+        env: { ...process.env, NEGAR_UPDATE_RESTARTED: '1' },
       });
     } catch (err: any) {
       console.error('[Update] Automatic restart failed; please run the server manually:', err?.message || err);

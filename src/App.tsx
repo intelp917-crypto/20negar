@@ -14,6 +14,7 @@ import { UsersPage } from './pages/UsersPage.tsx';
 import { DocumentationPage } from './pages/DocumentationPage.tsx';
 import { UploadModal } from './components/UploadModal.tsx';
 import { Video } from './types/index.ts';
+import { InstallPrompt } from './components/InstallPrompt.tsx';
 
 const MainLayout: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -276,6 +277,7 @@ export default function App() {
     <ToastProvider>
       <AuthProvider>
         <MainLayout />
+        <InstallPrompt />
       </AuthProvider>
     </ToastProvider>
   );

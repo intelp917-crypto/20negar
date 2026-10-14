@@ -54,6 +54,36 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 const FAST_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB
 const FAST_PARALLELISM = 4;
 const FAST_MAX_RETRIES = 4;
+// Mobile connections can leave a fetch pending forever after a radio handoff.
+// Bound each chunk request so the retry loop (and eventual TUS fallback) can
+// make progress instead of freezing at the last completed chunk.
+const FAST_CHUNK_TIMEOUT_MS = 45_000;
+let transferBasesPromise: Promise<string[]> | null = null;
+
+async function transferBases(): Promise<string[]> {
+  if (transferBasesPromise) return transferBasesPromise;
+  const sameOrigin = `${window.location.origin}/api/transfer`;
+  transferBasesPromise = fetch('/api/health', { credentials: 'same-origin', signal: AbortSignal.timeout(3000) })
+    .then(async (response) => {
+      if (!response.ok) return [sameOrigin];
+      const body = await response.json();
+      const routes = Array.isArray(body.transferRoutes) ? body.transferRoutes.filter((route: unknown) => typeof route === 'string') : [];
+      // Probe without Authorization first. Only send the bearer token after the
+      // candidate proves it is the same server instance as our current origin.
+      const reachable = await Promise.all(routes.map(async (route: string) => {
+        try {
+          const url = new URL(route);
+          if (url.protocol !== window.location.protocol || !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(url.hostname)) return null;
+          const probe = await fetch(`${url.origin}/api/health`, { credentials: 'omit', signal: AbortSignal.timeout(1500) });
+          if (!probe.ok || (await probe.json()).instanceId !== body.instanceId) return null;
+          return route;
+        } catch { return null; }
+      }));
+      return [...reachable.filter((route): route is string => !!route && route !== sameOrigin), sameOrigin];
+    })
+    .catch(() => [sameOrigin]);
+  return transferBasesPromise;
+}
 
 async function transferFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const token = getStoredToken();
@@ -61,7 +91,19 @@ async function transferFetch(path: string, options: RequestInit = {}): Promise<R
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
   }
-  return fetch(`/api/transfer${path}`, { ...options, headers });
+  const bases = await transferBases();
+  let lastError: unknown;
+  for (const base of bases) {
+    try {
+      const response = await fetch(`${base}${path}`, { ...options, headers, signal: options.signal || AbortSignal.timeout(FAST_CHUNK_TIMEOUT_MS), mode: new URL(base).origin === window.location.origin ? 'same-origin' : 'cors' });
+      // A reachable local engine returning an application error is authoritative;
+      // only network failures should move to the next route.
+      return response;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('مسیر انتقال در دسترس نیست.');
 }
 
 async function fastUpload(
@@ -108,11 +150,14 @@ async function fastUpload(
 
       let attempt = 0;
       for (;;) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), FAST_CHUNK_TIMEOUT_MS);
         try {
           const res = await transferFetch(`/upload/${uploadId}/chunk/${index}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/octet-stream' },
             body,
+            signal: controller.signal,
           });
           if (!res.ok) throw new Error(`chunk ${index} failed (${res.status})`);
           break;
@@ -120,6 +165,8 @@ async function fastUpload(
           attempt += 1;
           if (attempt > FAST_MAX_RETRIES) throw err;
           await new Promise((r) => setTimeout(r, 400 * attempt));
+        } finally {
+          clearTimeout(timeout);
         }
       }
 

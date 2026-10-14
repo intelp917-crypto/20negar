@@ -89,7 +89,7 @@ impl Config {
             .unwrap_or(4310);
 
         let jwt_secret = env::var("JWT_SECRET")
-            .unwrap_or_else(|_| "cineflow-super-secret-production-jwt-key-2026".to_string())
+            .unwrap_or_else(|_| "20negar-development-only-secret-change-me".to_string())
             .into_bytes();
 
         // Signatures for download URLs; falls back to the JWT secret.
@@ -256,17 +256,75 @@ impl Request {
     /// body is never fully buffered in memory.
     fn take_body_reader(&mut self) -> std::io::Result<(Option<u64>, BodyReader<'_>)> {
         let len: Option<u64> = self.header("content-length").and_then(|v| v.parse().ok());
-        Ok((len, BodyReader { inner: &mut self.reader, remaining: len }))
+        let chunked = self
+            .header("transfer-encoding")
+            .map(|v| v.to_ascii_lowercase().contains("chunked"))
+            .unwrap_or(false);
+        Ok((len, BodyReader {
+            inner: &mut self.reader,
+            remaining: len,
+            chunked,
+            chunk_remaining: 0,
+            finished: false,
+        }))
     }
 }
 
 struct BodyReader<'a> {
     inner: &'a mut BufReader<TcpStream>,
     remaining: Option<u64>,
+    chunked: bool,
+    chunk_remaining: usize,
+    finished: bool,
 }
 
 impl<'a> Read for BodyReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.finished || buf.is_empty() {
+            return Ok(0);
+        }
+
+        // A reverse proxy may re-encode a request body as HTTP chunked
+        // transfer. Decode the framing here instead of writing the hex sizes
+        // into the upload file or waiting forever for the connection to close.
+        if self.chunked {
+            if self.chunk_remaining == 0 {
+                let mut size_line = String::new();
+                self.inner.read_line(&mut size_line)?;
+                let size_text = size_line.trim().split(';').next().unwrap_or("").trim();
+                let size = usize::from_str_radix(size_text, 16)
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid chunk size"))?;
+                if size == 0 {
+                    // Consume trailers through the terminating blank line.
+                    loop {
+                        let mut trailer = String::new();
+                        self.inner.read_line(&mut trailer)?;
+                        if trailer.trim().is_empty() {
+                            break;
+                        }
+                    }
+                    self.finished = true;
+                    return Ok(0);
+                }
+                self.chunk_remaining = size;
+            }
+
+            let want = buf.len().min(self.chunk_remaining);
+            let n = self.inner.read(&mut buf[..want])?;
+            if n == 0 {
+                return Ok(0);
+            }
+            self.chunk_remaining -= n;
+            if self.chunk_remaining == 0 {
+                let mut crlf = [0u8; 2];
+                self.inner.read_exact(&mut crlf)?;
+                if crlf != [b'\r', b'\n'] {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid chunk terminator"));
+                }
+            }
+            return Ok(n);
+        }
+
         if let Some(0) = self.remaining {
             return Ok(0);
         }
@@ -634,6 +692,18 @@ fn handle_upload_chunk(
         }
     };
 
+    if let Some(d) = declared {
+        if d != expected {
+            json_response(
+                stream,
+                400,
+                "Bad Request",
+                serde_json::json!({ "error": format!("Declared length {} does not match chunk size {}.", d, expected) }),
+            );
+            return;
+        }
+    }
+
     // Stream the chunk straight to disk — nothing is buffered in memory.
     let mut buf = vec![0u8; 512 * 1024];
     let mut written: u64 = 0;
@@ -642,6 +712,10 @@ fn handle_upload_chunk(
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                if written + n as u64 > expected {
+                    failure = Some(format!("Invalid chunk size (more than {}).", expected));
+                    break;
+                }
                 if let Err(e) = file.write_all(&buf[..n]) {
                     failure = Some(e.to_string());
                     break;
@@ -668,17 +742,6 @@ fn handle_upload_chunk(
             serde_json::json!({ "error": format!("Invalid chunk size ({} != {}).", written, expected) }),
         );
         return;
-    }
-    if let Some(d) = declared {
-        if d != expected {
-            json_response(
-                stream,
-                400,
-                "Bad Request",
-                serde_json::json!({ "error": format!("Declared length {} does not match chunk size {}.", d, expected) }),
-            );
-            return;
-        }
     }
     let _ = file.sync_data();
     engine.bytes_written.fetch_add(written, Ordering::Relaxed);

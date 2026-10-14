@@ -13,7 +13,7 @@
 //!   4. Locate the project (or clone it from GitHub on a brand-new machine).
 //!   5. `npm install` the web dependencies.
 //!   6. Build the Rust transfer engine (`cargo build --release`).
-//!   7. Optionally build the production frontend bundle.
+//!   7. Build the production frontend bundle.
 //!   8. Create a `Start 20negar.bat` launcher and a desktop shortcut.
 //!   9. Print a summary and (optionally) start the app.
 //!
@@ -71,16 +71,16 @@ fn enable_ansi() {
 #[cfg(not(windows))]
 fn enable_ansi() {}
 
-fn info(msg: &str) {
+fn info(msg: impl std::fmt::Display) {
     println!("  {CYAN}•{RESET} {msg}");
 }
-fn good(msg: &str) {
+fn good(msg: impl std::fmt::Display) {
     println!("  {GREEN}✓{RESET} {msg}");
 }
-fn warn(msg: &str) {
+fn warn(msg: impl std::fmt::Display) {
     println!("  {YELLOW}!{RESET} {msg}");
 }
-fn bad(msg: &str) {
+fn bad(msg: impl std::fmt::Display) {
     println!("  {RED}✗{RESET} {msg}");
 }
 fn step(n: u32, total: u32, title: &str) {
@@ -98,7 +98,7 @@ fn banner() {
     println!("{BOLD}{MAGENTA}  ████╔╝██║████╔╝██║██║╚██╗██║██╔══╝  ██║   ██║██╔══██║██╔══██╗{RESET}");
     println!("{BOLD}{MAGENTA}  ╚██████╔╝╚██████╔╝██║ ╚████║███████╗╚██████╔╝██║  ██║██║  ██║{RESET}");
     println!("{BOLD}{MAGENTA}   ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝{RESET}");
-    println!("{DIM}        Setup Wizard — سامانه مدیریت ویدیو ۲۰نگار (v1.0.0){RESET}");
+    println!("{DIM}        20negar Video Management Setup (v{}){RESET}", env!("CARGO_PKG_VERSION"));
     println!();
 }
 
@@ -134,6 +134,7 @@ fn is_script(program: &str) -> bool {
 
 /// Runs a program with inherited stdio and returns its exit code.
 fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> io::Result<i32> {
+    let program = if program == "npm" { "npm.cmd" } else { program };
     let mut cmd = if is_script(program) {
         let mut c = Command::new("cmd");
         c.arg("/C").arg(program);
@@ -145,7 +146,11 @@ fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> io::Result<i32> {
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    Ok(cmd.status()?.code().unwrap_or(-1))
+    let status = cmd.status().map_err(|err| {
+        bad(format!("Could not start {program}: {err}"));
+        err
+    })?;
+    Ok(status.code().unwrap_or(-1))
 }
 
 fn run_quiet(program: &str, args: &[&str], cwd: Option<&Path>) -> Option<i32> {
@@ -228,7 +233,7 @@ fn refresh_path() {
         }
     }
     if let Some(home) = env::var_os("USERPROFILE") {
-        prepend_path(&PathBuf::from(home).join(".cargo").join("bin"));
+        prepend_path(&PathBuf::from(&home).join(".cargo").join("bin"));
         prepend_path(&PathBuf::from(&home).join("AppData").join("Roaming").join("npm"));
     }
     for dir in [
@@ -253,19 +258,19 @@ fn elevate_self(args: &[String]) -> bool {
     };
     let quoted: Vec<String> = args
         .iter()
-        .map(|a| format!("'{}'", a.replace('\'', "''")))
+        .map(|a| format!("'\"{}\"'", a.replace('\'', "''")))
         .collect();
     let script = format!(
-        "Start-Process -FilePath '{}' -ArgumentList {} -Verb RunAs",
+        "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath '{}' -ArgumentList {} -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
         exe.display().to_string().replace('\'', "''"),
         quoted.join(",")
     );
     run_quiet(
         "powershell",
-        &["-NoProfile", "-Command", &format!("{script}; exit 0")],
+        &["-NoProfile", "-Command", &script],
         None,
     )
-    .is_some()
+    == Some(0)
 }
 
 // ── downloads ────────────────────────────────────────────────────────────────
@@ -273,8 +278,13 @@ fn elevate_self(args: &[String]) -> bool {
 fn download(url: &str, dest: &Path) -> bool {
     println!("  {DIM}↓ {url}{RESET}");
     if let Some(dir) = dest.parent() {
-        let _ = fs::create_dir_all(dir);
+        if let Err(err) = fs::create_dir_all(dir) {
+            bad(&format!("Could not create download directory {}: {err}", dir.display()));
+            return false;
+        }
     }
+    // Never mistake a stale partial download for a successful new download.
+    let _ = fs::remove_file(dest);
     let dest_s = dest.display().to_string();
     if which("curl.exe").is_some() || which("curl").is_some() {
         let prog = if which("curl.exe").is_some() {
@@ -295,10 +305,11 @@ fn download(url: &str, dest: &Path) -> bool {
     let script = format!(
         "$ProgressPreference='SilentlyContinue'; \
          [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
-         Invoke-WebRequest -Uri '{url}' -OutFile '{dest_s}'"
+         $ErrorActionPreference='Stop'; Invoke-WebRequest -Uri '{}' -OutFile '{}'",
+         url.replace('\'', "''"), dest_s.replace('\'', "''")
     );
-    run_quiet("powershell", &["-NoProfile", "-Command", &script], None);
-    dest.exists()
+    run_quiet("powershell", &["-NoProfile", "-Command", &script], None) == Some(0)
+        && dest.exists()
 }
 
 fn temp_file(name: &str) -> PathBuf {
@@ -361,7 +372,7 @@ fn install_node(opts: &Options) -> bool {
         )
         .unwrap_or(-1);
         refresh_path();
-        if node_major().is_some() {
+        if node_major().map(|v| v >= MIN_NODE_MAJOR).unwrap_or(false) {
             good("Node.js installed through winget.");
             return true;
         }
@@ -401,7 +412,7 @@ fn install_node(opts: &Options) -> bool {
     )
     .unwrap_or(-1);
     refresh_path();
-    if node_major().is_some() {
+    if node_major().map(|v| v >= MIN_NODE_MAJOR).unwrap_or(false) {
         good("Node.js installed.");
         true
     } else {
@@ -454,7 +465,7 @@ fn install_rust() -> bool {
 fn install_git() -> bool {
     if which("winget").is_some() {
         info("Installing Git via winget…");
-        let _ = run(
+        let code = run(
             "winget",
             &[
                 "install",
@@ -467,15 +478,58 @@ fn install_git() -> bool {
                 "--accept-package-agreements",
             ],
             None,
-        );
+        ).unwrap_or(-1);
         refresh_path();
         if which("git").is_some() {
             good("Git installed through winget.");
             return true;
         }
+        warn(format!("winget Git installation returned {code}; trying the official Git release."));
+    }
+    // Windows Server and fresh Windows images may not have App Installer/winget.
+    let script = "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
+        $r=Invoke-RestMethod 'https://api.github.com/repos/git-for-windows/git/releases/latest'; \
+        ($r.assets | Where-Object { $_.name -match '^Git-.*-64-bit.exe$' } | Select-Object -First 1).browser_download_url";
+    if let Some(url) = capture("powershell", &["-NoProfile", "-Command", script]) {
+        let setup = temp_file("git-setup.exe");
+        if url.starts_with("https://github.com/git-for-windows/git/releases/download/") && download(&url, &setup) {
+            let code = run(&setup.display().to_string(), &["/VERYSILENT", "/NORESTART", "/SP-"], None).unwrap_or(-1);
+            refresh_path();
+            if code == 0 && which("git").is_some() {
+                good("Git installed from the official release.");
+                return true;
+            }
+            warn(format!("Git installer failed with exit code {code}. Run setup as administrator."));
+        }
     }
     warn("Git could not be installed automatically. Download it from https://git-scm.com/download/win if you need to clone the repository.");
     false
+}
+
+fn ensure_msvc() -> bool {
+    let vswhere = PathBuf::from(env::var_os("ProgramFiles(x86)").unwrap_or_else(|| r"C:\Program Files (x86)".into()))
+        .join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+    if capture(&vswhere.display().to_string(), &["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"])
+        .map(|s| !s.is_empty()).unwrap_or(false) {
+        good("Visual C++ build tools detected.");
+        return true;
+    }
+    info("Installing Visual Studio C++ Build Tools and Windows SDK (required by Rust MSVC; several GB)…");
+    let setup = temp_file("vs_buildtools.exe");
+    if !download("https://aka.ms/vs/17/release/vs_BuildTools.exe", &setup) {
+        return false;
+    }
+    let code = run(&setup.display().to_string(), &["--passive", "--wait", "--norestart", "--add", "Microsoft.VisualStudio.Workload.VCTools", "--includeRecommended"], None).unwrap_or(-1);
+    if code == 3010 {
+        warn("C++ Build Tools require a Windows restart. Restart and rerun setup before building the engine.");
+        return false;
+    }
+    if code != 0 {
+        bad(format!("C++ Build Tools installation failed with exit code {code}. Install the Desktop development with C++ workload, then rerun setup as administrator."));
+        return false;
+    }
+    good("Visual C++ Build Tools installed.");
+    true
 }
 
 // ── project helpers ──────────────────────────────────────────────────────────
@@ -513,6 +567,95 @@ fn npm_install(root: &Path, use_ci: bool) -> bool {
         bad(format!("`npm install` failed with exit code {code}."));
         false
     }
+}
+
+/// Creates a production environment file only on a fresh checkout.
+///
+/// The secret is generated by the Windows cryptography provider through
+/// PowerShell and is kept in memory only long enough to write `.env`. The
+/// create-new write protects an existing file even if another process races
+/// this installer.
+fn ensure_environment(root: &Path) -> bool {
+    let env_path = root.join(".env");
+    if env_path.exists() {
+        good("Existing .env preserved.");
+        return true;
+    }
+
+    let template_path = root.join(".env.example");
+    let template = match fs::read_to_string(&template_path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            bad(format!("Could not read .env.example: {err}"));
+            return false;
+        }
+    };
+
+    let script = "$bytes = New-Object byte[] 48; \
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create(); \
+        try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }; \
+        ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''";
+    let secret = match capture(
+        "powershell",
+        &["-NoProfile", "-NonInteractive", "-Command", script],
+    ) {
+        Some(value) if value.len() == 96 && value.chars().all(|c| c.is_ascii_hexdigit()) => value,
+        _ => {
+            bad("Could not generate a cryptographically secure JWT secret. No .env was created.");
+            return false;
+        }
+    };
+
+    let mut found_secret = false;
+    let mut found_production = false;
+    let mut rendered = Vec::new();
+    for line in template.lines() {
+        let key = line.trim_start();
+        if key.starts_with("JWT_SECRET=") {
+            rendered.push(format!("JWT_SECRET=\"{secret}\""));
+            found_secret = true;
+        } else if key.starts_with("NODE_ENV=") {
+            rendered.push("NODE_ENV=\"production\"".to_string());
+            found_production = true;
+        } else {
+            rendered.push(line.to_string());
+        }
+    }
+    if !found_secret {
+        bad(".env.example does not define JWT_SECRET. No .env was created.");
+        return false;
+    }
+    if !found_production {
+        rendered.insert(0, "NODE_ENV=\"production\"".to_string());
+    }
+    let mut contents = rendered.join("\n");
+    if template.ends_with('\n') || template.ends_with('\r') {
+        contents.push('\n');
+    }
+
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&env_path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            good("Existing .env preserved.");
+            return true;
+        }
+        Err(err) => {
+            bad(format!("Could not create .env: {err}"));
+            return false;
+        }
+    };
+
+    if let Err(err) = file.write_all(contents.as_bytes()) {
+        let _ = fs::remove_file(&env_path);
+        bad(format!("Could not write .env: {err}"));
+        return false;
+    }
+    good("Created production .env from .env.example.");
+    true
 }
 
 fn build_engine(root: &Path) -> bool {
@@ -560,15 +703,64 @@ fn build_frontend(root: &Path) -> bool {
     }
 }
 
+/// Creates a production .env once, without overwriting an operator's existing
+/// configuration. The secret is generated by Windows CNG through PowerShell
+/// and is never printed.
+fn ensure_env(root: &Path) -> bool {
+    let env_path = root.join(".env");
+    if env_path.exists() {
+        good("Existing .env configuration preserved.");
+        return true;
+    }
+
+    let example = root.join(".env.example");
+    let template = match fs::read_to_string(&example) {
+        Ok(value) => value,
+        Err(err) => {
+            bad(format!("Could not read {}: {err}", example.display()));
+            return false;
+        }
+    };
+    let random_script = "$b=New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToHexString($b)";
+    let secret = match capture("powershell", &["-NoProfile", "-Command", random_script]) {
+        Some(value) if value.len() >= 64 => value,
+        _ => {
+            bad("Could not generate a secure JWT secret. Create .env manually and rerun setup.");
+            return false;
+        }
+    };
+    let configured = template
+        .lines()
+        .map(|line| if line.trim_start().starts_with("JWT_SECRET=") {
+            format!("JWT_SECRET=\"{secret}\"")
+        } else {
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n") + "\r\n";
+
+    match fs::write(&env_path, configured) {
+        Ok(_) => {
+            good("Production .env created with a generated JWT secret.");
+            true
+        }
+        Err(err) => {
+            bad(format!("Could not create {}: {err}", env_path.display()));
+            false
+        }
+    }
+}
+
 fn write_launcher(root: &Path) -> Option<PathBuf> {
     let bat = root.join("Start 20negar.bat");
     let body = format!(
         "@echo off\r\n\
-         title 20negar — سامانه مدیریت ویدیو\r\n\
+         title 20negar Video Management\r\n\
          cd /d \"{root}\"\r\n\
          set \"PATH=%USERPROFILE%\\.cargo\\bin;%PATH%\"\r\n\
-         echo Starting 20negar…\r\n\
-         npm run dev\r\n\
+         echo Starting 20negar...\r\n\
+         set \"NODE_ENV=production\"\r\n\
+         call npm start\r\n\
          echo.\r\n\
          echo The server stopped. Press any key to close.\r\n\
          pause >nul\r\n",
@@ -605,7 +797,7 @@ fn create_shortcut(target: &Path, root: &Path, name: &str) -> bool {
         cwd = esc(&root.display().to_string()),
         icon = esc(&target.display().to_string()),
     );
-    run_quiet("powershell", &["-NoProfile", "-Command", &script], None).is_some() && link.exists()
+    run_quiet("powershell", &["-NoProfile", "-Command", &script], None) == Some(0) && link.exists()
 }
 
 fn open_folder(path: &Path) {
@@ -644,7 +836,7 @@ impl Default for Options {
             skip_git: false,
             skip_npm: false,
             skip_engine: false,
-            skip_frontend: true,
+            skip_frontend: false,
             no_shortcut: false,
             ci: false,
             no_elevate: false,
@@ -670,7 +862,8 @@ fn help() {
     println!("      --skip-git       Do not install Git.");
     println!("      --skip-npm       Do not run npm install.");
     println!("      --skip-engine    Do not build the Rust transfer engine.");
-    println!("      --with-frontend  Also run the production frontend build.");
+    println!("      --with-frontend  Build the production frontend (default).");
+    println!("      --skip-frontend  Skip the frontend build (requires an existing dist/).");
     println!("      --ci             Prefer `npm ci` over `npm install`.");
     println!("      --no-shortcut    Do not create a desktop shortcut.");
     println!("      --no-elevate     Never attempt to self-elevate.");
@@ -704,6 +897,7 @@ fn parse_args() -> Option<Options> {
             "--skip-npm" => o.skip_npm = true,
             "--skip-engine" => o.skip_engine = true,
             "--with-frontend" => o.skip_frontend = false,
+            "--skip-frontend" => o.skip_frontend = true,
             "--ci" => o.ci = true,
             "--no-shortcut" => o.no_shortcut = true,
             "--no-elevate" => o.no_elevate = true,
@@ -741,7 +935,7 @@ fn main() {
     let node = node_major();
     let has_npm = which("npm").is_some();
     let has_cargo = which("cargo").is_some();
-    let has_git = which("git").is_some();
+    let mut has_git = which("git").is_some();
 
     match node {
         Some(v) if v >= MIN_NODE_MAJOR => good(format!("Node.js v{v} detected.")),
@@ -764,6 +958,42 @@ fn main() {
         warn("Git was not found (only needed to clone the repository).");
     }
 
+    // --check is genuinely read-only: do not clone, install, or inspect a
+    // project directory just to print the system report.
+    if opts.check_only {
+        println!();
+        rule();
+        println!("{BOLD}System report only — nothing was changed ({RESET}{DIM}--check{RESET}{BOLD}).{RESET}");
+        rule();
+        if !opts.silent {
+            pause("Press Enter to exit…");
+        }
+        return;
+    }
+
+    // Elevate before cloning: a fresh machine needs Git before it has a project.
+    if !admin && !opts.no_elevate && (!has_git || node.map(|v| v < MIN_NODE_MAJOR).unwrap_or(true) || !opts.skip_engine) {
+        warn("Installing prerequisites may require administrator rights.");
+        if opts.yes || ask("Relaunch this wizard as administrator?", true) {
+            let mut args: Vec<String> = env::args().skip(1).collect();
+            args.push("--no-elevate".into());
+            args.push("--yes".into());
+            // Preserve relative --dir resolution across UAC's working-directory change.
+            if let Some(index) = args.iter().position(|a| a == "--dir") {
+                if let Some(dir) = args.get_mut(index + 1) {
+                    if let Ok(absolute) = std::path::absolute(&*dir) {
+                        *dir = absolute.display().to_string();
+                    }
+                }
+            }
+            if elevate_self(&args) {
+                return;
+            }
+            bad("The elevated setup failed or elevation was declined. See the elevated window for errors; rerun as administrator.");
+            std::process::exit(1);
+        }
+    }
+
     // ── step 2: locate the project ──────────────────────────────────────────
     step(2, total_steps, "Locating the project");
     let exe_dir = env::current_exe()
@@ -771,11 +1001,16 @@ fn main() {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let mut root = opts
-        .dir
-        .clone()
-        .filter(|d| d.join("package.json").exists())
-        .or_else(|| find_project_root(&exe_dir));
+    let mut root = match opts.dir.as_ref() {
+        Some(dir) => {
+            if dir.join("package.json").exists() && dir.join("server.ts").exists() {
+                Some(std::path::absolute(dir).unwrap_or_else(|_| dir.clone()))
+            } else {
+                None
+            }
+        }
+        None => find_project_root(&exe_dir),
+    };
 
     if let Some(ref r) = root {
         good(format!("Project found: {}", r.display()));
@@ -788,6 +1023,11 @@ fn main() {
             "No project next to the installer. It will be cloned into: {}",
             target.display()
         ));
+        // Git is needed before the clone, while the regular prerequisites step
+        // below runs after the project has been located.
+        if !has_git && !opts.skip_git && (opts.yes || ask("Install Git now so the repository can be cloned?", true)) {
+            has_git = install_git();
+        }
         if !has_git {
             bad("Git is required to clone the project. Install Git and run setup again, or copy the project folder next to setup.exe.");
             if !opts.silent {
@@ -814,48 +1054,28 @@ fn main() {
     }
     let root = root.unwrap();
 
-    if opts.check_only {
-        println!();
-        rule();
-        println!("{BOLD}System report only — nothing was changed ({RESET}{DIM}--check{RESET}{BOLD}).{RESET}");
-        rule();
+    if !ensure_environment(&root) {
+        bad("Setup cannot continue without a valid production .env.");
         if !opts.silent {
             pause("Press Enter to exit…");
         }
-        return;
+        std::process::exit(1);
+    }
+
+    if opts.skip_frontend && !root.join("dist").join("index.html").is_file() {
+        bad("--skip-frontend requires an existing dist/index.html. Rerun setup without --skip-frontend to build the production frontend.");
+        std::process::exit(1);
     }
 
     // ── step 3: prerequisites ───────────────────────────────────────────────
     step(3, total_steps, "Installing prerequisites");
 
-    let mut need_admin = false;
-    if !opts.skip_node && node.map(|v| v < MIN_NODE_MAJOR).unwrap_or(true) {
-        need_admin = true;
-    }
-    if !opts.skip_git && !has_git {
-        need_admin = true;
-    }
-
-    if need_admin && !admin && !opts.no_elevate {
-        warn("Installing Node.js/Git needs administrator rights.");
-        let proceed = opts.yes || ask("Relaunch this wizard as administrator?", true);
-        if proceed {
-            let mut args: Vec<String> = env::args().skip(1).collect();
-            if !args.iter().any(|a| a == "--yes" || a == "-y") {
-                args.push("--yes".into());
-            }
-            info("Requesting elevation — accept the Windows prompt…");
-            if elevate_self(&args) {
-                println!("  {DIM}The elevated wizard is running in a new window.{RESET}");
-                return;
-            }
-            warn("Elevation was declined; continuing without it (some steps may fail).");
-        }
-    }
-
     if !opts.skip_node && node.map(|v| v < MIN_NODE_MAJOR).unwrap_or(true) {
         if opts.yes || ask("Install Node.js LTS now?", true) {
-            install_node(&opts);
+            if !install_node(&opts) {
+                bad("Node.js installation did not complete; setup cannot continue.");
+                std::process::exit(1);
+            }
         }
     } else if node.is_some() {
         good("Node.js is already installed — skipping.");
@@ -863,7 +1083,13 @@ fn main() {
 
     if !opts.skip_rust && !has_cargo {
         if opts.yes || ask("Install Rust (for the transfer engine)?", true) {
-            install_rust();
+            if !opts.skip_engine && !ensure_msvc() {
+                std::process::exit(1);
+            }
+            if !install_rust() && !opts.skip_engine {
+                bad("Rust installation did not complete; setup cannot build the transfer engine.");
+                std::process::exit(1);
+            }
         }
     } else if has_cargo {
         good("Rust is already installed — skipping.");
@@ -871,15 +1097,29 @@ fn main() {
 
     if !opts.skip_git && !has_git {
         if opts.yes || ask("Install Git?", true) {
-            install_git();
+            has_git = install_git();
+            if !has_git {
+                bad("Git installation did not complete. Git is required when setup must clone the repository.");
+            }
         }
     } else if has_git {
         good("Git is already installed — skipping.");
     }
 
     refresh_path();
+    if node_major().map(|v| v < MIN_NODE_MAJOR).unwrap_or(true) {
+        bad(format!("Node.js {MIN_NODE_MAJOR}+ is required. Upgrade Node.js and rerun setup."));
+        std::process::exit(1);
+    }
     if which("npm").is_none() {
         bad("npm is still not available. Open a NEW terminal (so PATH refreshes) and run setup.exe again.");
+        if !opts.silent {
+            pause("Press Enter to exit…");
+        }
+        std::process::exit(1);
+    }
+    if !opts.skip_engine && which("cargo").is_none() {
+        bad("Cargo is still not available; install Rust or rerun with --skip-engine.");
         if !opts.silent {
             pause("Press Enter to exit…");
         }
@@ -894,9 +1134,14 @@ fn main() {
         npm_ok = npm_install(&root, opts.ci);
     }
 
+    let env_ok = ensure_env(&root);
+
     let mut engine_ok = true;
     if !opts.skip_engine {
         if which("cargo").is_some() {
+            if !ensure_msvc() {
+                std::process::exit(1);
+            }
             engine_ok = build_engine(&root);
         } else {
             warn("Cargo is unavailable — the app will run with the built-in Node transfer path instead of the Rust engine.");
@@ -910,10 +1155,24 @@ fn main() {
         true
     };
 
+    // A setup run is successful only when every requested build step passed.
+    // Do not leave a half-installed machine with a zero exit code.
+    if !npm_ok || !env_ok || (!opts.skip_engine && !engine_ok) || !frontend_ok {
+        bad("Setup did not complete successfully; see the errors above and rerun after fixing them.");
+        if !opts.silent {
+            pause("Press Enter to exit…");
+        }
+        std::process::exit(1);
+    }
+
     // ── step 5: finish ──────────────────────────────────────────────────────
     step(5, total_steps, "Finishing up");
 
     let launcher = write_launcher(&root);
+    if launcher.is_none() {
+        bad("Setup could not create the production launcher. Check directory permissions and rerun setup.");
+        std::process::exit(1);
+    }
     if let Some(ref bat) = launcher {
         good(format!("Launcher created: {}", bat.display()));
     }
@@ -939,17 +1198,17 @@ fn main() {
     );
     println!(
         "  Rust engine  : {}",
-        if engine_ok { format!("{GREEN}built{RESET}") } else { format!("{YELLOW}fallback{RESET}") }
+        if opts.skip_engine { format!("{DIM}skipped{RESET}") } else if engine_ok { format!("{GREEN}built{RESET}") } else { format!("{RED}failed{RESET}") }
     );
     println!(
         "  Frontend     : {}",
-        if frontend_ok { format!("{GREEN}ok{RESET}") } else { format!("{RED}failed{RESET}") }
+        if opts.skip_frontend { format!("{DIM}using existing dist/{RESET}") } else if frontend_ok { format!("{GREEN}ok{RESET}") } else { format!("{RED}failed{RESET}") }
     );
     rule();
     println!();
     println!("{BOLD}Next steps{RESET}");
     println!("  • Start the app with the desktop shortcut, or run:");
-    println!("      {CYAN}cd \"{}\" && npm run dev{RESET}", root.display());
+    println!("      {CYAN}cd /d \"{}\" && set \"NODE_ENV=production\" && npm start{RESET}", root.display());
     println!("  • Open {CYAN}http://localhost:3000{RESET} in your browser.");
     println!("  • On first run, set {CYAN}SUPERADMIN_INITIAL_PASSWORD{RESET} in a .env file to create the admin account.");
     println!();

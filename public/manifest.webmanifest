@@ -2,7 +2,7 @@
   "name": "20negar — سامانه مدیریت ویدیو",
   "short_name": "20negar",
   "description": "سامانه استودیو ۲۰نگار برای مدیریت گردش کار ویدیو، بازبینی کیفی و پخش تطبیقی.",
-  "id": "/",
+  "id": "./",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -4,7 +4,9 @@ import https from 'https';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { PORT, ENABLE_STANDARD_PORTS, HTTP_PORT, SECURE_PORT } from './server/config.ts';
+import os from 'os';
+import crypto from 'crypto';
+import { PORT, ENABLE_STANDARD_PORTS, HTTP_PORT, SECURE_PORT, CORS_ORIGINS } from './server/config.ts';
 import { ensureTlsMaterial } from './server/tls.ts';
 import { UpdateService } from './server/services/update.service.ts';
 import { db } from './server/db/database.ts';
@@ -32,15 +34,24 @@ async function startServer() {
   const app = express();
 
   // VPN, Reverse Proxy & Port Forwarding support
-  app.set('trust proxy', true);
+  const trustProxy = /^(1|true|yes)$/i.test((process.env.TRUST_PROXY || '').trim());
+  app.set('trust proxy', trustProxy);
 
   // Disable x-powered-by
   app.disable('x-powered-by');
 
-  // Universal CORS & Host headers support for VPN, WAN, and port-forwarded static IPs
+  // CORS is explicit for cross-origin LAN transfer candidates. Same-origin public-IP
+  // access does not need CORS at all; reflecting arbitrary origins with credentials is
+  // unsafe and also produces an invalid `*` response when Origin is absent.
   app.use((req, res, next) => {
-    const origin = req.headers.origin || '*';
-    res.header('Access-Control-Allow-Origin', origin);
+    const origin = req.headers.origin;
+    const requestOrigin = `${req.protocol}://${req.get('host')}`;
+    const allowed = origin && (CORS_ORIGINS.includes(origin) || origin === requestOrigin);
+    if (allowed) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Vary', 'Origin');
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
     res.header(
       'Access-Control-Allow-Headers',
@@ -48,7 +59,6 @@ async function startServer() {
         'Tus-Resumable, Tus-Version, Tus-Extension, Tus-Max-Size, Upload-Length, Upload-Offset, ' +
         'Upload-Metadata, Upload-Concat, Upload-Defer-Length, Location'
     );
-    res.header('Access-Control-Allow-Credentials', 'true');
     res.header(
       'Access-Control-Expose-Headers',
       'Content-Range, Accept-Ranges, Content-Length, Content-Type, Location, Tus-Resumable, Upload-Offset, Upload-Length'
@@ -100,8 +110,29 @@ async function startServer() {
   app.use('/api/tus', tusRoutes);
 
   // Health check
+  const instanceId = crypto.randomBytes(32).toString('hex');
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', service: '20Negar Studio API', time: new Date().toISOString() });
+    const protocol = _req.protocol;
+    const localTransferOrigins = new Set<string>();
+    for (const addresses of Object.values(os.networkInterfaces())) {
+      for (const address of addresses || []) {
+        if (address.family === 'IPv4' && !address.internal) {
+          const privateAddress = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address.address);
+          if (!privateAddress) continue;
+          const port = protocol === 'https' ? SECURE_PORT : PORT;
+          localTransferOrigins.add(`${protocol}://${address.address}:${port}`);
+        }
+      }
+    }
+    res.json({
+      status: 'ok',
+      instanceId,
+      service: '20Negar Studio API',
+      time: new Date().toISOString(),
+      // The client may probe these only after the public route is reachable. This
+      // avoids declaring the app offline when NAT loopback is unavailable.
+      transferRoutes: Array.from(localTransferOrigins).map((origin) => `${origin}/api/transfer`),
+    });
   });
 
   const isProduction = process.env.NODE_ENV === 'production';
@@ -165,12 +196,16 @@ async function startServer() {
 
       if (SECURE_PORT !== PORT && SECURE_PORT !== HTTP_PORT) {
         const tlsMaterial = ensureTlsMaterial();
-        const secureServer = tlsMaterial ? https.createServer(tlsMaterial, app) : http.createServer(app);
+        if (!tlsMaterial) {
+          console.warn('[TLS] HTTPS listener skipped: no TLS certificate is available. Configure TLS_KEY_PATH and TLS_CERT_PATH.');
+          return;
+        }
+        const secureServer = https.createServer(tlsMaterial, app);
         secureServer.on('error', (err: NodeJS.ErrnoException) => console.warn(describeListenError(SECURE_PORT, 'HTTPS', err)));
         secureServer.listen(SECURE_PORT, '0.0.0.0', () => {
           console.log(
             `[Server] Standard ${SECURE_PORT} ${tlsMaterial ? 'HTTPS' : 'HTTP'} port is active (VPN reachable).` +
-              (tlsMaterial ? ` Self-signed certificate; the browser will warn once.` : '')
+              (process.env.TLS_CERT_PATH ? '' : ' Development certificate: Android PWA installation requires a trusted certificate matching the URL.')
           );
         });
         extraServers.push(secureServer);
@@ -202,7 +237,7 @@ async function startServer() {
     try {
       const startupUpdate = await UpdateService.applyUpdate({ npmInstall: true });
       if (startupUpdate.changed) {
-        if (process.env.FREEBUFF_UPDATE_RESTARTED === '1') {
+        if (process.env.NEGAR_UPDATE_RESTARTED === '1') {
           console.warn('[Update] Update applied, but the automatic restart will not repeat. Please restart the server manually.');
         } else {
           console.log(`[Update] Update applied (${startupUpdate.filesChanged} files). Restarting in 3 seconds...`);

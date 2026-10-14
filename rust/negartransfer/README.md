@@ -1,57 +1,57 @@
-# negartransfer — موتور پرسرعت آپلود و دانلود (Rust)
+# 20negar transfer engine (Rust)
 
-موتور انتقال فایل استودیو ۲۰نگار. کارهای سنگین انتقال بایت را از Node جدا می‌کند:
+`negartransfer` handles 20negar file transfers separately from the Node server:
 
-- **آپلود چانکی موازی و ازسر‌گیر**: هر تکه مستقیم روی offset خودش در فایل نوشته
-  می‌شود، پس چند تکه هم‌زمان و بدون بافر شدن در حافظه ارسال می‌شوند.
-- **دانلود بازه‌ای (Range/206)**: فایل با بافر بزرگ و بدون خواندن کامل در حافظه
-  استریم می‌شود؛ برای پخش ویدیو و قطعات HLS.
+- **Parallel, resumable chunked uploads**: each chunk is written directly to
+  its offset without buffering the entire file in memory.
+- **Range downloads (206)**: streams video and HLS segments without loading
+  the entire file into memory.
 
-بدون وابستگی سنگین نوشته شده است (std + رمزنگاری pure-Rust)، بنابراین روی هر
-ماشینی بدون نیاز به ابزار بیلد C کامپایل می‌شود.
+The engine uses the Rust standard library and pure-Rust cryptography dependencies.
+Windows MSVC builds still require Visual C++ Build Tools and the Windows SDK.
 
-## بیلد
+## Build
 
 ```bash
 npm run build:transfer
-# یا
+# Or:
 cargo build --release --manifest-path rust/negartransfer/Cargo.toml
 ```
 
-خروجی: `rust/negartransfer/target/release/negartransfer[.exe]`
+Output: `rust/negartransfer/target/release/negartransfer[.exe]`.
 
-سرور Node این باینری را در استارتاپ به‌صورت خودکار اجرا می‌کند. اگر باینری موجود
-نباشد، برنامه به‌صورت خودکار به پیاده‌سازی داخلی Node برمی‌گردد (بدون خطا).
+The Node server starts the binary automatically. If it is unavailable, the server
+logs a warning and continues with its built-in transfer handlers.
 
-## مسیرها
+## Routes
 
-پروکسی روی `/api/transfer` توسط سرور Node:
+The Node server proxies these routes under `/api/transfer`:
 
-| متد | مسیر | توضیح |
+| Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/health` | وضعیت موتور (بدون احراز هویت) |
-| `POST` | `/upload/init` | ساخت نشست آپلود (JSON: fileName، fileSize، mimeType، chunkSize) |
-| `PUT` | `/upload/:id/chunk/:index` | ارسال یک تکه (بدنه خام، قابل ارسال موازی) |
-| `GET` | `/upload/:id` | وضعیت و ازسر‌گیری (کدام تکه‌ها رسیده‌اند) |
-| `POST` | `/upload/:id/complete` | نهایی‌سازی و اعتبارسنجی حجم |
-| `GET` | `/download?key=&exp=&sig=&name=&dl=` | استریم فایل با پشتیبانی Range |
+| `GET` | `/health` | Engine status (unauthenticated) |
+| `POST` | `/upload/init` | Create an upload session (JSON: fileName, fileSize, mimeType, chunkSize) |
+| `PUT` | `/upload/:id/chunk/:index` | Send a chunk (raw body; supports parallel requests) |
+| `GET` | `/upload/:id` | Read upload status and received chunks for resuming |
+| `POST` | `/upload/:id/complete` | Finalize and validate file size |
+| `GET` | `/download?key=&exp=&sig=&name=&dl=` | Stream a file with Range support |
 
-## احراز هویت
+## Authentication
 
-- **آپلود**: توکن JWT برنامه (HS256) با همان `JWT_SECRET` سرور؛ نقش‌های مجاز:
-  `Editor`، `Cameraman`، `Admin`، `SuperAdmin`.
-- **دانلود**: امضای کوتاه‌مدت HMAC که سرور Node پس از اعمال کنترل دسترسی خودش
-  صادر می‌کند؛ بنابراین موتور به دیتابیس دسترسی ندارد.
-- مسیرها در برابر `../` محافظت شده‌اند و فقط داخل پوشه storage سرو می‌شوند.
+- **Uploads**: application JWTs (HS256) signed with the server secret; allowed
+  roles are `Editor`, `Cameraman`, `Admin`, and `SuperAdmin`.
+- **Downloads**: short-lived HMAC signatures issued by the Node server after its
+  access checks. The engine does not access the database.
+- File paths are constrained to the configured storage directory.
 
-## متغیرهای محیطی
+## Environment variables
 
-`NEGAR_TRANSFER_PORT`، `NEGAR_TRANSFER_SECRET`، `NEGAR_TRANSFER_ENABLED`،
-`NEGAR_TRANSFER_BIN`، `JWT_SECRET`، `NEGAR_DATA_DIR`، `NEGAR_STORAGE_DIR`،
+`NEGAR_TRANSFER_PORT`, `NEGAR_TRANSFER_SECRET`, `NEGAR_TRANSFER_ENABLED`,
+`NEGAR_TRANSFER_BIN`, `JWT_SECRET`, `NEGAR_DATA_DIR`, `NEGAR_STORAGE_DIR`,
 `NEGAR_CHUNK_DIR`.
 
-## سازگاری
+## Compatibility
 
-نشست‌های آپلود در همان قالب روی‌دیسک پیاده‌سازی Node
-(`<id>.data` و `<id>.json` در `data/storage/temp/chunked`) نوشته می‌شوند، پس
-پایپ‌لاین ساخت ویدیو بدون هیچ تغییری کار می‌کند.
+Upload sessions use the Node implementation's on-disk format (`<id>.data` and
+`<id>.json` in `data/storage/temp/chunked`) so the video processing pipeline can
+consume completed uploads.

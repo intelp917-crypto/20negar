@@ -1,11 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import net from 'net';
 import { execFileSync } from 'child_process';
 import { SSL_DIR } from './config.ts';
+import { PUBLIC_URL } from './config.ts';
 
-const KEY_PATH = path.join(SSL_DIR, 'server.key');
-const CERT_PATH = path.join(SSL_DIR, 'server.crt');
+const KEY_PATH = process.env.TLS_KEY_PATH || path.join(SSL_DIR, 'server.key');
+const CERT_PATH = process.env.TLS_CERT_PATH || path.join(SSL_DIR, 'server.crt');
 
 /**
  * SAN های گواهی: لوکال‌هاست، IP داخلی، تمام IPv4 های غیر internal و نام هاست.
@@ -14,6 +16,12 @@ const CERT_PATH = path.join(SSL_DIR, 'server.crt');
  */
 function buildSubjectAltName(): string {
   const entries = ['IP:127.0.0.1', 'DNS:localhost'];
+  if (PUBLIC_URL) {
+    try {
+      const publicHost = new URL(PUBLIC_URL).hostname;
+      entries.push(net.isIP(publicHost) ? `IP:${publicHost}` : `DNS:${publicHost}`);
+    } catch {}
+  }
   try {
     const hostname = os.hostname();
     if (hostname) entries.push(`DNS:${hostname}`);
@@ -40,6 +48,12 @@ function buildSubjectAltName(): string {
  */
 export function ensureTlsMaterial(): { key: Buffer; cert: Buffer } | null {
   try {
+    if (process.env.TLS_KEY_PATH || process.env.TLS_CERT_PATH) {
+      if (!process.env.TLS_KEY_PATH || !process.env.TLS_CERT_PATH) {
+        throw new Error('TLS_KEY_PATH and TLS_CERT_PATH must both be configured.');
+      }
+      return { key: fs.readFileSync(KEY_PATH), cert: fs.readFileSync(CERT_PATH) };
+    }
     if (fs.existsSync(KEY_PATH) && fs.existsSync(CERT_PATH)) {
       return { key: fs.readFileSync(KEY_PATH), cert: fs.readFileSync(CERT_PATH) };
     }

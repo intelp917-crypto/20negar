@@ -12,7 +12,17 @@ export const PORT = parseInt(process.env.PORT || '3000', 10);
 export const ENABLE_STANDARD_PORTS = (process.env.ENABLE_STANDARD_PORTS || 'true').toLowerCase() !== 'false';
 export const HTTP_PORT = parseInt(process.env.HTTP_PORT || '80', 10);
 export const SECURE_PORT = parseInt(process.env.SECURE_PORT || '443', 10);
-export const JWT_SECRET = process.env.JWT_SECRET || 'cineflow-super-secret-production-jwt-key-2026';
+/** Public URL used when a browser reaches the server through a forwarded IP/domain. */
+export const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/$/, '');
+export const CORS_ORIGINS = (process.env.CORS_ORIGINS || PUBLIC_URL)
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+const configuredJwtSecret = (process.env.JWT_SECRET || '').trim();
+if (process.env.NODE_ENV === 'production' && configuredJwtSecret.length < 32) {
+  throw new Error('JWT_SECRET must be set to a random value of at least 32 characters in production.');
+}
+export const JWT_SECRET = configuredJwtSecret || '20negar-development-only-secret-change-me';
 export const JWT_EXPIRES_IN = '7d';
 
 export const DATA_DIR = path.resolve(process.cwd(), 'data');

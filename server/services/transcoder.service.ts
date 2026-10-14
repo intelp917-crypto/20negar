@@ -6,6 +6,12 @@ import { db } from '../db/database.ts';
 import { fileStorage } from '../storage/local.storage.ts';
 import { PRIVATE_THUMBNAILS_DIR, PRIVATE_VIDEOS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
 
+const TRANSCODER_PROCESS_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.TRANSCODER_PROCESS_TIMEOUT_MS || '', 10) || 30 * 60_000
+);
+const PROCESS_KILL_GRACE_MS = 2_000;
+
 export interface QualityTarget {
   name: '1080p' | '720p' | '480p' | '360p';
   width: number;
@@ -489,7 +495,7 @@ export class TranscoderService {
   }
 
   private static probeMetadata(filePath: string): Promise<{ width: number; height: number; duration: number; bitrate: number }> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       // Run ffprobe (bundled binary, PATH fallback)
       const proc = spawn(FFPROBE_PATH, [
         '-v', 'error',
@@ -500,9 +506,30 @@ export class TranscoderService {
       ]);
 
       let stdout = '';
+      let settled = false;
+      let forceKillTimer: NodeJS.Timeout | null = null;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        console.error(`[Transcoder] ffprobe timed out after ${TRANSCODER_PROCESS_TIMEOUT_MS}ms.`);
+        proc.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => {
+          if (!settled) proc.kill('SIGKILL');
+        }, PROCESS_KILL_GRACE_MS);
+        reject(new Error(`ffprobe timed out after ${TRANSCODER_PROCESS_TIMEOUT_MS}ms`));
+        settled = true;
+      }, TRANSCODER_PROCESS_TIMEOUT_MS);
+
+      const clearTimers = () => {
+        clearTimeout(timeout);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+      };
+
       proc.stdout.on('data', (d) => (stdout += d.toString()));
 
       proc.on('close', (code) => {
+        clearTimers();
+        if (settled) return;
+        settled = true;
         if (code === 0 && stdout) {
           try {
             const data = JSON.parse(stdout);
@@ -522,7 +549,13 @@ export class TranscoderService {
         resolve({ width: 1280, height: 720, duration: 10, bitrate: 2000000 });
       });
 
-      proc.on('error', () => {
+      proc.on('error', (err) => {
+        clearTimers();
+        if (settled) return;
+        settled = true;
+        // Preserve the existing metadata fallback for unavailable binaries;
+        // only an actual timeout is promoted to a failed processing job.
+        console.warn('[Transcoder] ffprobe process error; using fallback metadata:', err.message);
         resolve({ width: 1280, height: 720, duration: 10, bitrate: 2000000 });
       });
     });
@@ -532,9 +565,30 @@ export class TranscoderService {
     return new Promise((resolve, reject) => {
       const child = spawn(FFMPEG_PATH, args);
       let stderr = '';
+      let settled = false;
+      let forceKillTimer: NodeJS.Timeout | null = null;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        console.error(`[Transcoder] ffmpeg timed out after ${TRANSCODER_PROCESS_TIMEOUT_MS}ms.`);
+        child.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => {
+          if (!settled) child.kill('SIGKILL');
+        }, PROCESS_KILL_GRACE_MS);
+        settled = true;
+        reject(new Error(`FFmpeg timed out after ${TRANSCODER_PROCESS_TIMEOUT_MS}ms`));
+      }, TRANSCODER_PROCESS_TIMEOUT_MS);
+
+      const clearTimers = () => {
+        clearTimeout(timeout);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+      };
+
       child.stderr.on('data', (d) => (stderr += d.toString()));
 
       child.on('close', (code) => {
+        clearTimers();
+        if (settled) return;
+        settled = true;
         if (code === 0) {
           resolve();
         } else {
@@ -543,6 +597,9 @@ export class TranscoderService {
       });
 
       child.on('error', (err) => {
+        clearTimers();
+        if (settled) return;
+        settled = true;
         reject(err);
       });
     });

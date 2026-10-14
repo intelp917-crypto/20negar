@@ -6,9 +6,9 @@ import fs from 'fs';
 /**
  * Production bootstrap.
  *
- * Demo/test seeding has been removed:
- *  - no demo accounts with well-known passwords (admin1/admin1, editor1/editor1, ...)
- *  - no demo video/HLS content generated on startup
+ * Preconfigured/test seeding has been removed:
+ *  - no accounts with well-known passwords are created
+ *  - no sample video/HLS content is generated on startup
  *
  * The only thing seeded is a single SuperAdmin, and only when the database has no
  * users at all. Its password must be supplied via the SUPERADMIN_INITIAL_PASSWORD
