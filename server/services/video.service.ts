@@ -348,6 +348,10 @@ export class VideoService {
   ): VideoDto {
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
+
+    if (video.status !== 'PendingReview' || video.processing_status !== 'Ready') {
+      throw new Error('تنها ویدیوی آماده و در وضعیت انتظار بازبینی قابل تایید است.');
+    }
     
     // Authorization: only the assigned supervisor or SuperAdmin can approve
     if (supervisor.role !== 'SuperAdmin' && video.supervisor_id !== supervisor.id) {
@@ -370,7 +374,7 @@ export class VideoService {
     }
 
     db.run(
-      `UPDATE videos SET status = 'Approved', approved_at = ?, updated_at = ?, rejection_reason = NULL, admin_id = COALESCE(?, admin_id) WHERE id = ?`,
+      `UPDATE videos SET status = 'Approved', approved_at = ?, rejected_at = NULL, updated_at = ?, rejection_reason = NULL, admin_id = COALESCE(?, admin_id) WHERE id = ?`,
       [now, now, targetAdminId, videoId]
     );
 
@@ -433,6 +437,10 @@ export class VideoService {
 
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
+
+    if (video.status !== 'PendingReview' || video.processing_status !== 'Ready') {
+      throw new Error('تنها ویدیوی آماده و در وضعیت انتظار بازبینی قابل رد است.');
+    }
     
     // Authorization: only the assigned supervisor or SuperAdmin can reject
     if (supervisor.role !== 'SuperAdmin' && video.supervisor_id !== supervisor.id) {
@@ -441,7 +449,7 @@ export class VideoService {
 
     const now = new Date().toISOString();
     db.run(
-      `UPDATE videos SET status = 'Rejected', rejected_at = ?, rejection_reason = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE videos SET status = 'Rejected', rejected_at = ?, rejection_reason = ?, approved_at = NULL, admin_id = NULL, updated_at = ? WHERE id = ?`,
       [now, rejectionReason.trim(), now, videoId]
     );
 

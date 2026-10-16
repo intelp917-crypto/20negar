@@ -44,6 +44,11 @@ export interface SessionMeta {
   received: number[];
   createdAt: number;
   meta: Record<string, string>; // عنوان/ناظر و... که کلاینت همراه چانک‌ها می‌فرستد
+  expectedChecksum?: string;
+  actualChecksum?: string;
+  verifiedAt?: number;
+  verificationResult?: 'pending' | 'verified' | 'mismatch' | 'not_provided';
+  finalizedAt?: number;
 }
 
 export function sessionPath(id: string): string {
@@ -72,7 +77,69 @@ export function loadSession(id: string): SessionMeta | null {
 }
 
 function saveSession(meta: SessionMeta): void {
-  fs.writeFileSync(metaFile(meta.id), JSON.stringify(meta));
+  const destination = metaFile(meta.id);
+  const temporary = `${destination}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  const fd = fs.openSync(temporary, 'w');
+  try {
+    fs.writeFileSync(fd, JSON.stringify(meta));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(temporary, destination);
+  } catch (err) {
+    try {
+      fs.unlinkSync(temporary);
+    } catch {}
+    throw err;
+  }
+}
+
+function hashFile(filePath: string): string {
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(filePath, 'r');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest('hex');
+}
+
+export function verifySessionIntegrity(
+  meta: SessionMeta,
+  filePath: string = dataFile(meta.id),
+  persist: (session: SessionMeta) => void = saveSession,
+): SessionMeta {
+  if (meta.verificationResult === 'verified' || meta.verificationResult === 'mismatch' || meta.verificationResult === 'not_provided') {
+    return meta;
+  }
+
+  const actualChecksum = hashFile(filePath);
+  const now = Date.now();
+  meta.actualChecksum = actualChecksum;
+  meta.verifiedAt = now;
+  meta.finalizedAt = now;
+  if (!meta.expectedChecksum) {
+    meta.verificationResult = 'not_provided';
+  } else {
+    meta.verificationResult = meta.expectedChecksum === actualChecksum ? 'verified' : 'mismatch';
+  }
+  persist(meta);
+  return meta;
+}
+
+function readExpectedChecksum(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const checksum = String(value).trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(checksum)) return undefined;
+  return checksum;
 }
 
 /**
@@ -87,6 +154,7 @@ export function createSessionFromCompletedFile(opts: {
   fileSize: number;
   sourcePath: string;
   meta?: Record<string, string>;
+  expectedChecksum?: string;
   /** در صورت ارائه، از همین شناسه به‌عنوان شناسه نشست استفاده می‌شود (فرمت ۳۲ کاراکتری هگز) */
   id?: string;
 }): string | null {
@@ -120,8 +188,10 @@ export function createSessionFromCompletedFile(opts: {
       received: [0],
       createdAt: Date.now(),
       meta: opts.meta || {},
+      expectedChecksum: readExpectedChecksum(opts.expectedChecksum),
+      verificationResult: 'pending',
     };
-    fs.writeFileSync(metaFile(id), JSON.stringify(session));
+    saveSession(session);
     return id;
   } catch (err) {
     console.error('[Upload] createSessionFromCompletedFile failed:', err);
@@ -155,7 +225,7 @@ setInterval(cleanupExpired, 60 * 60 * 1000).unref?.();
 // POST /api/chunked-uploads - ایجاد نشست آپلود
 router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
   try {
-    const { fileName, fileSize, mimeType, chunkSize } = req.body || {};
+    const { fileName, fileSize, mimeType, chunkSize, checksum, expectedChecksum, sha256 } = req.body || {};
     if (!fileName || !String(fileName).trim()) {
       res.status(400).json({ error: 'نام فایل الزامی است.' });
       return;
@@ -175,6 +245,12 @@ router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin',
       return;
     }
 
+    const requestedChecksum = checksum ?? expectedChecksum ?? sha256 ?? req.headers['x-upload-checksum'];
+    if (requestedChecksum !== undefined && !readExpectedChecksum(requestedChecksum)) {
+      res.status(400).json({ error: 'چک‌سام SHA-256 نامعتبر است.' });
+      return;
+    }
+
     const cs = Math.min(Math.max(parseInt(chunkSize, 10) || DEFAULT_CHUNK_SIZE, 64 * 1024), MAX_CHUNK_SIZE);
     const totalChunks = Math.ceil(size / cs);
 
@@ -189,6 +265,8 @@ router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin',
       received: [],
       createdAt: Date.now(),
       meta: {},
+      expectedChecksum: readExpectedChecksum(requestedChecksum),
+      verificationResult: 'pending',
     };
 
     // ایجاد فایل با حجم نهایی (Sparse) تا چانک‌ها بتوانند موازی روی آن بنویسند
@@ -220,9 +298,14 @@ router.get('/:id', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin
     chunkSize: meta.chunkSize,
     totalChunks: meta.totalChunks,
     received: meta.received,
-    fileSize: meta.fileSize,
-    originalName: meta.originalName,
-  });
+      fileSize: meta.fileSize,
+      originalName: meta.originalName,
+      expectedChecksum: meta.expectedChecksum,
+      actualChecksum: meta.actualChecksum,
+      verifiedAt: meta.verifiedAt,
+      verificationResult: meta.verificationResult,
+      finalizedAt: meta.finalizedAt,
+    });
 });
 
 // PUT /api/chunked-uploads/:id/chunk/:index - ارسال یک چانک (قابل فراخوانی موازی)
@@ -246,6 +329,10 @@ router.put(
       }
 
       const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      if (meta.finalizedAt) {
+        res.status(409).json({ error: 'نشست آپلود قبلاً نهایی شده است.' });
+        return;
+      }
       if (body.length === 0) {
         res.status(400).json({ error: 'بدنه چانک خالی است.' });
         return;
@@ -311,12 +398,30 @@ router.post('/:id/complete', authenticate, requireRole(['Editor', 'Cameraman', '
     return;
   }
 
+  const verified = verifySessionIntegrity(meta);
+  if (verified.verificationResult === 'mismatch') {
+    res.status(400).json({
+      error: 'چک‌سام فایل با مقدار مورد انتظار مطابقت ندارد.',
+      uploadId: meta.id,
+      expectedChecksum: meta.expectedChecksum,
+      actualChecksum: meta.actualChecksum,
+      verifiedAt: meta.verifiedAt,
+      verificationResult: meta.verificationResult,
+    });
+    return;
+  }
+
   res.json({
     ok: true,
     uploadId: meta.id,
     fileSize: meta.fileSize,
     originalName: meta.originalName,
     meta: meta.meta,
+    expectedChecksum: verified.expectedChecksum,
+    actualChecksum: verified.actualChecksum,
+    verifiedAt: verified.verifiedAt,
+    verificationResult: verified.verificationResult,
+    finalizedAt: verified.finalizedAt,
   });
 });
 

@@ -73,6 +73,11 @@ router.post('/users', authenticate, requireRole(['SuperAdmin', 'Admin']), async 
       return;
     }
 
+    if (req.user!.role !== 'SuperAdmin' && role === 'SuperAdmin') {
+      res.status(403).json({ error: 'تنها سوپریوزر می‌تواند حساب سوپریوزر ایجاد کند.' });
+      return;
+    }
+
     const created = await AuthService.createUser({
       username: username.trim(),
       password: password.trim(),

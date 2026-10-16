@@ -446,11 +446,17 @@ router.get('/:id/stream', authenticate, async (req: Request, res: Response): Pro
     const range = req.headers.range;
 
     if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (!match || (!match[1] && !match[2])) {
+        res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+        return;
+      }
 
-      if (start >= fileSize) {
+      const start = match[1] ? Number(match[1]) : Math.max(0, fileSize - Number(match[2]));
+      const requestedEnd = match[2] ? Number(match[2]) : fileSize - 1;
+      const end = Math.min(requestedEnd, fileSize - 1);
+
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= fileSize || end < start) {
         res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
         return;
       }
@@ -482,13 +488,7 @@ router.get('/:id/stream', authenticate, async (req: Request, res: Response): Pro
 // GET /api/videos/:id/hls/* - Secure HLS Playlist & Segments Delivery
 router.get(
   '/:id/hls/*',
-  (req: Request, res: Response, next: any): void => {
-    const subPath = req.params[0] || 'master.m3u8';
-    if (subPath.endsWith('.ts')) {
-      return next();
-    }
-    authenticate(req, res, next);
-  },
+  authenticate,
   async (req: Request, res: Response): Promise<void> => {
     try {
       const videoId = parseInt(req.params.id, 10);
@@ -501,8 +501,14 @@ router.get(
       }
 
       const subPath = req.params[0] || 'master.m3u8';
-      const cleanSubPath = path.normalize(subPath).replace(/^(\.\.[\/\\])+/, '');
-      const hlsFilePath = path.join(PRIVATE_HLS_DIR, `video_${videoId}`, cleanSubPath);
+      const hlsRoot = path.resolve(PRIVATE_HLS_DIR, `video_${videoId}`);
+      const hlsFilePath = path.resolve(hlsRoot, subPath);
+      const relativeHlsPath = path.relative(hlsRoot, hlsFilePath);
+      if (relativeHlsPath === '' || relativeHlsPath.startsWith(`..${path.sep}`) || path.isAbsolute(relativeHlsPath)) {
+        res.status(400).json({ error: 'مسیر فایل HLS نامعتبر است.' });
+        return;
+      }
+      const cleanSubPath = relativeHlsPath.replace(/\\/g, '/');
 
       if (!fs.existsSync(hlsFilePath)) {
         res.status(404).json({ error: 'فایل HLS مورد نظر هنوز آماده نشده است.' });
