@@ -22,8 +22,11 @@ New custom chunk sessions are also recorded in the additive `upload_sessions`
 database table through `server/services/upload.service.ts`. The database record
 stores ownership, expected/actual size, storage keys, lifecycle state, expiry,
 checksum verification, and safe failure details. The sidecar JSON remains the
-transport compatibility record during this incremental migration; it is not yet
-the canonical TUS finalization implementation.
+transport compatibility record during this incremental migration. TUS now upserts
+the durable row using its validated stable ID, scopes status/patch/delete requests
+to the authenticated owner, and records streamed SHA-256 verification, final size,
+final key, and completion state. Repeated TUS finish callbacks return from the
+durable completed state without moving or hashing again.
 
 Database exports now use a same-directory temporary file, `fsync`, atomic rename,
 and a `.bak` copy of the previous valid database file. This protects the last

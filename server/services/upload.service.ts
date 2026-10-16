@@ -44,6 +44,22 @@ export type UploadSessionUpdate = Partial<Pick<UploadSession,
   'checksumActual' | 'verificationStatus' | 'verifiedAt' | 'finalizedVideoId' |
   'errorCode' | 'errorMessage'>>;
 
+export interface UploadFinishInput {
+  expectedChecksum: string | null;
+  actualChecksum: string;
+  actualSize: number;
+  existingState?: UploadSessionState;
+}
+
+export interface UploadFinishDecision {
+  idempotent: boolean;
+  state: UploadSessionState;
+  verificationStatus: VerificationStatus;
+  verified: boolean;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
 const SESSION_COLUMNS = `
   id, owner_id as ownerId, filename, expected_size as expectedSize,
   actual_size as actualSize, mime, temp_key as tempKey, final_key as finalKey,
@@ -74,8 +90,46 @@ export function createUploadSession(input: CreateUploadSessionInput): UploadSess
   return getUploadSession(input.ownerId, id)!;
 }
 
+/** Create the durable record for a transport upload, or safely refresh its metadata. */
+export function upsertUploadSession(input: CreateUploadSessionInput): UploadSession {
+  validateCreateUploadSessionInput(input);
+  const id = input.id || randomUUID();
+  if (!/^[a-f0-9-]{16,64}$/i.test(id)) throw new Error('id must be a safe upload-session identifier');
+  const now = new Date().toISOString();
+  const existing = db.queryOne<{ ownerId: number }>('SELECT owner_id as ownerId FROM upload_sessions WHERE id = ?', [id]);
+  if (existing && existing.ownerId !== input.ownerId) throw new Error('upload session belongs to another owner');
+  db.run(
+    `INSERT INTO upload_sessions (id, owner_id, filename, expected_size, mime, temp_key, expires_at, checksum_expected, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET filename = excluded.filename, expected_size = excluded.expected_size,
+       mime = excluded.mime, temp_key = COALESCE(upload_sessions.temp_key, excluded.temp_key),
+       expires_at = excluded.expires_at, checksum_expected = COALESCE(upload_sessions.checksum_expected, excluded.checksum_expected),
+       updated_at = excluded.updated_at`,
+    [id, input.ownerId, input.filename, input.expectedSize, input.mime, input.tempKey ?? null, input.expiresAt, input.checksumExpected ?? null, now, now]
+  );
+  return getUploadSession(input.ownerId, id)!;
+}
+
 export function getUploadSession(ownerId: number, id: string): UploadSession | null {
   return db.queryOne<UploadSession>(`SELECT ${SESSION_COLUMNS} FROM upload_sessions WHERE id = ? AND owner_id = ?`, [id, ownerId]);
+}
+
+export function isUploadSessionOwner(session: Pick<UploadSession, 'ownerId'> | null, ownerId: number): boolean {
+  return !!session && session.ownerId === ownerId;
+}
+
+export function decideUploadFinish(input: UploadFinishInput): UploadFinishDecision {
+  const verified = !input.expectedChecksum || input.expectedChecksum === input.actualChecksum;
+  const mismatch = !!input.expectedChecksum && !verified;
+  const idempotent = (input.existingState === 'completed' || input.existingState === 'finalized') && !mismatch;
+  return {
+    idempotent,
+    state: mismatch ? 'failed' : input.existingState === 'finalized' ? 'finalized' : 'completed',
+    verificationStatus: mismatch ? 'mismatch' : input.expectedChecksum ? 'verified' : 'pending',
+    verified,
+    errorCode: mismatch ? 'CHECKSUM_MISMATCH' : null,
+    errorMessage: mismatch ? 'Uploaded bytes did not match the expected SHA-256 checksum.' : null,
+  };
 }
 
 export function updateUploadSession(ownerId: number, id: string, update: UploadSessionUpdate): UploadSession | null {
