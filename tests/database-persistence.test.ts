@@ -47,7 +47,7 @@ test('versioned migrations create upload sessions and are repeatable', async () 
 
     const migration = database.queryOne<{ version: number }>('SELECT MAX(version) as version FROM schema_migrations');
     const uploadTable = database.queryOne<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='upload_sessions'");
-    assert.equal(migration?.version, 2);
+    assert.equal(migration?.version, 3);
     assert.equal(uploadTable?.name, 'upload_sessions');
     database.persistImmediate();
     database.dispose();

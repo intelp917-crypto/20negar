@@ -15,6 +15,14 @@ export function setStoredToken(token: string | null): void {
   }
 }
 
+export interface InternalAccessConfig {
+  enabled: boolean;
+  url: string | null;
+  lastHealthStatus: 'unknown' | 'healthy' | 'unavailable' | 'invalid';
+  lastSuccessfulHealthCheck: string | null;
+  instructions: string;
+}
+
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
   const headers = new Headers(options.headers || {});
@@ -270,6 +278,9 @@ async function tusUpload(
 }
 
 export const api = {
+  getInternalAccess: () => request<InternalAccessConfig>('/api/internal-access'),
+  updateInternalAccess: (config: { enabled: boolean; url: string; instructions?: string }) => request<InternalAccessConfig>('/api/internal-access', { method: 'PUT', body: JSON.stringify(config) }),
+  verifyInternalAccess: () => request<InternalAccessConfig>('/api/internal-access/health-check', { method: 'POST' }),
   // Auth
   login: (credentials: { username: string; password: string }) =>
     request<{ token: string; user: User }>('/api/auth/login', {

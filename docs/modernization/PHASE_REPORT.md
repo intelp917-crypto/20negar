@@ -55,6 +55,15 @@ Environment: Windows, Node.js `v24.21.0`, npm `11.19.0`.
 - No external-LAN benchmark, production deployment, backup restoration against organizational data, or large-file transfer benchmark was executed.
 - Query-string bearer tokens remain supported for browser media elements and remain a documented security risk until scoped short-lived media URLs exist.
 
+### Phase 4 — Project and verified Internal App foundations
+
+Implemented in the current working phase:
+
+- Added additive project, membership, logical category, destination, and publication-assignment tables.
+- Added project listing, access-controlled lookup, creation, and membership APIs at `/api/projects`.
+- Added SuperAdmin-configured Internal App settings at `/api/internal-access`.
+- Added HTTPS/private-host validation, server-side health verification, user-facing Internal App navigation, and SuperAdmin configuration UI.
+
 ## Next dependency-ordered phase
 
 Complete the TUS/database integration without breaking existing sidecar sessions: create and update the durable session at TUS create/offset/finalize events, return the authoritative application session ID, make finalization idempotent, and add API-level tests for ownership, resume, checksum mismatch, and restart recovery. Only after that should project/revision/publication entities be built on the durable upload boundary.

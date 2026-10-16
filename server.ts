@@ -25,6 +25,7 @@ import videoRoutes from './server/routes/video.routes.ts';
 import notificationRoutes from './server/routes/notification.routes.ts';
 import auditRoutes from './server/routes/audit.routes.ts';
 import projectRoutes from './server/routes/project.routes.ts';
+import internalAccessRoutes from './server/routes/internal-access.routes.ts';
 import uploadRoutes from './server/routes/upload.routes.ts';
 import tusRoutes from './server/routes/tus.routes.ts';
 
@@ -107,6 +108,7 @@ async function startServer() {
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/audit-logs', auditRoutes);
   app.use('/api/projects', projectRoutes);
+  app.use('/api/internal-access', internalAccessRoutes);
   app.use('/api/chunked-uploads', uploadRoutes);
   // آپلود TUS (پروتکل استاندارد ازسره‌گیر — سریع و مقاوم در برابر قطعی)
   app.use('/api/tus', tusRoutes);

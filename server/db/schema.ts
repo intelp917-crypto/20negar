@@ -265,6 +265,17 @@ export function runMigrations(database = db): void {
         CREATE INDEX IF NOT EXISTS idx_publication_assignments_user ON publication_assignments(assigned_user_id, status);
       `,
     },
+    {
+      version: 3,
+      sql: `
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          updated_at TEXT NOT NULL
+        );
+      `,
+    },
   ];
 
   for (const migration of versionedMigrations) {
