@@ -9,6 +9,7 @@ import { videoUpload } from '../middleware/upload.middleware.ts';
 import { PRIVATE_VIDEOS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
 import { AuditService } from '../services/audit.service.ts';
 import { streamFromTransferEngine } from '../services/transfer.service.ts';
+import { resolveVideoProject, ProjectSelectionError } from '../services/project.service.ts';
 import { loadSession as loadChunkSession, dataFile as chunkDataFile, cleanupSession as cleanupChunkSession } from './upload.routes.ts';
 
 const router = Router();
@@ -135,6 +136,16 @@ router.post(
         return;
       }
 
+      // Resolve and authorize the project before moving the uploaded file out of temp storage.
+      const project = resolveVideoProject(req.user!, {
+        projectId: req.body.projectId,
+        projectName: req.body.projectName,
+        projectDescription: req.body.projectDescription,
+        clientName: req.body.clientName,
+        projectCode: req.body.projectCode,
+        isConfidential: req.body.isConfidential,
+      });
+
       let tempPath: string;
       let originalName: string;
       let fileSize: number;
@@ -175,6 +186,7 @@ router.post(
         editorId: req.user!.id,
         supervisorId: parseInt(supervisorId, 10),
         uploadedById: isCameraman ? req.user!.id : null,
+        projectId: project.id,
         ipAddress: req.ip,
       });
 
@@ -191,7 +203,8 @@ router.post(
           fs.unlinkSync(req.file.path);
         } catch {}
       }
-      res.status(500).json({ error: err.message || 'خطا در بارگذاری ویدیو.' });
+      const status = err instanceof ProjectSelectionError ? err.status : 500;
+      res.status(status).json({ error: err.message || 'خطا در بارگذاری ویدیو.' });
     }
   }
 );
@@ -252,6 +265,7 @@ router.post(
         editorId: req.user!.id,
         supervisorId,
         parentVideoId: parentId,
+        projectId: parentVideo.projectId,
         versionNumber: parentVideo.versionNumber + 1,
         ipAddress: req.ip,
       });

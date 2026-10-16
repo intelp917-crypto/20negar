@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { UploadCloud, X, Film, CheckCircle2, AlertCircle, FileVideo } from 'lucide-react';
-import { User, Video } from '../types/index.ts';
+import { NewProjectInput, Project, User, Video } from '../types/index.ts';
 import { api } from '../api/client.ts';
 
 interface UploadModalProps {
@@ -14,6 +14,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
   const [title, setTitle] = useState('');
   const [supervisorId, setSupervisorId] = useState<number | ''>('');
   const [supervisors, setSupervisors] = useState<User[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false);
+  const [projectSelection, setProjectSelection] = useState<number | 'new' | ''>('');
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectDescription, setNewProjectDescription] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -23,17 +28,32 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
 
   useEffect(() => {
     if (isOpen) {
-      api.getSupervisors()
-        .then((list) => {
-          setSupervisors(list);
-          if (list.length > 0 && !supervisorId) {
-            setSupervisorId(list[0].id);
-          }
-        })
-        .catch((err) => console.error('Failed to load supervisors:', err));
+      setIsLoadingProjects(true);
+      Promise.allSettled([api.getSupervisors(), api.getProjects()]).then(([supervisorResult, projectResult]) => {
+        if (supervisorResult.status === 'fulfilled') {
+          setSupervisors(supervisorResult.value);
+          if (supervisorResult.value.length > 0 && !supervisorId) setSupervisorId(supervisorResult.value[0].id);
+        } else {
+          console.error('Failed to load supervisors:', supervisorResult.reason);
+        }
+        if (projectResult.status === 'fulfilled') {
+          setProjects(projectResult.value);
+          if (projectResult.value.length > 0) setProjectSelection(projectResult.value[0].id);
+          else setProjectSelection('new');
+        } else {
+          console.error('Failed to load projects:', projectResult.reason);
+          setError(projectResult.reason?.message || 'بارگذاری فهرست پروژه‌ها با خطا مواجه شد.');
+        }
+        setIsLoadingProjects(false);
+      });
     } else {
       setFile(null);
       setTitle('');
+      setProjects([]);
+      setIsLoadingProjects(false);
+      setProjectSelection('');
+      setNewProjectName('');
+      setNewProjectDescription('');
       setUploadProgress(null);
       setIsProcessing(false);
       setError(null);
@@ -87,6 +107,22 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       setError('لطفا ناظر کیفی پروژه را انتخاب نمایید.');
       return;
     }
+    if (!projectSelection) {
+      setError('لطفا پروژه را انتخاب نمایید یا ایجاد پروژه جدید را انتخاب کنید.');
+      return;
+    }
+
+    let newProject: NewProjectInput | undefined;
+    if (projectSelection === 'new') {
+      if (!newProjectName.trim()) {
+        setError('نام پروژه جدید الزامی است.');
+        return;
+      }
+      newProject = {
+        name: newProjectName.trim(),
+        ...(newProjectDescription.trim() ? { description: newProjectDescription.trim() } : {}),
+      };
+    }
 
     setError(null);
     setUploadProgress(0);
@@ -95,6 +131,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     formData.append('video', file);
     formData.append('title', title.trim());
     formData.append('supervisorId', String(supervisorId));
+    if (projectSelection === 'new') {
+      formData.append('projectName', newProject!.name);
+      if (newProject!.description) formData.append('projectDescription', newProject!.description);
+    } else {
+      formData.append('projectId', String(projectSelection));
+    }
 
     try {
       const created = await api.uploadVideo(formData, (percent) => {
@@ -204,6 +246,40 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
           <div className="space-y-4">
             <div>
               <label className="block font-semibold text-zinc-300 mb-1.5">
+                پروژه <span className="text-purple-400">*</span>
+              </label>
+               <select
+                 required
+                 disabled={uploadProgress !== null || isLoadingProjects}
+                 value={projectSelection}
+                 onChange={(e) => {
+                   const value = e.target.value;
+                   setProjectSelection(value === 'new' ? 'new' : value ? Number(value) : '');
+                   setError(null);
+                 }}
+                 className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
+               >
+                 {isLoadingProjects && <option value="">در حال بارگذاری پروژه‌ها...</option>}
+                 {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                 <option value="new">+ ایجاد پروژه جدید</option>
+               </select>
+             </div>
+
+             {projectSelection === 'new' && (
+               <div className="space-y-3 p-3.5 rounded-xl bg-zinc-950/60 border border-zinc-800">
+                 <div>
+                   <label className="block font-semibold text-zinc-300 mb-1.5">نام پروژه جدید <span className="text-purple-400">*</span></label>
+                   <input type="text" required disabled={uploadProgress !== null} value={newProjectName} onChange={(e) => { setNewProjectName(e.target.value); setError(null); }} placeholder="مثال: کمپین تابستانی" className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50" />
+                 </div>
+                 <div>
+                   <label className="block font-semibold text-zinc-300 mb-1.5">جزئیات پروژه</label>
+                   <textarea rows={2} disabled={uploadProgress !== null} value={newProjectDescription} onChange={(e) => { setNewProjectDescription(e.target.value); setError(null); }} placeholder="توضیحات اختیاری پروژه" className="w-full resize-none bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50" />
+                 </div>
+               </div>
+             )}
+
+             <div>
+              <label className="block font-semibold text-zinc-300 mb-1.5">
                 عنوان پروژه ویدیویی <span className="text-purple-400">*</span>
               </label>
               <input
@@ -211,7 +287,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 required
                 disabled={uploadProgress !== null}
                 value={title}
-                onChange={(e) => setTitle(e.target.value)}
+                 onChange={(e) => { setTitle(e.target.value); setError(null); }}
                 placeholder="مثال: تیزر تبلیغاتی شرکت - کات نهایی"
                 className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
               />
@@ -225,7 +301,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 required
                 disabled={uploadProgress !== null}
                 value={supervisorId}
-                onChange={(e) => setSupervisorId(Number(e.target.value))}
+                 onChange={(e) => { setSupervisorId(Number(e.target.value)); setError(null); }}
                 className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
               >
                 {supervisors.length === 0 && <option value="">در حال بارگذاری لیست ناظران...</option>}

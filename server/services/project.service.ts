@@ -3,6 +3,22 @@ import { UserRole } from './auth.service.ts';
 
 export interface ProjectUser { id: number; role: UserRole; }
 
+export interface VideoProjectSelection {
+  projectId?: number | string | null;
+  projectName?: string;
+  projectDescription?: string;
+  clientName?: string;
+  projectCode?: string;
+  isConfidential?: boolean | string;
+}
+
+export class ProjectSelectionError extends Error {
+  constructor(public readonly message: string, public readonly code: 'missing_selection' | 'project_access_denied', public readonly status: number) {
+    super(message);
+    this.name = 'ProjectSelectionError';
+  }
+}
+
 export interface ProjectDto {
   id: number;
   name: string;
@@ -31,6 +47,31 @@ export function canCreateProject(user: ProjectUser): boolean {
 
 export function canManageProject(user: ProjectUser, project: ProjectDto): boolean {
   return user.role === 'SuperAdmin' || project.createdById === user.id || user.role === 'Admin';
+}
+
+export function resolveVideoProject(user: ProjectUser, input: VideoProjectSelection, dependencies: {
+  getProject?: (user: ProjectUser, id: number) => ProjectDto | null;
+  createProject?: (user: ProjectUser, input: { name: string; description?: string; clientName?: string; projectCode?: string; isConfidential?: boolean }) => ProjectDto;
+} = {}): ProjectDto {
+  const rawProjectId = input.projectId;
+  if (rawProjectId !== undefined && rawProjectId !== null && String(rawProjectId).trim() !== '') {
+    const projectId = Number(rawProjectId);
+    const project = Number.isSafeInteger(projectId) && projectId > 0
+      ? (dependencies.getProject || getProject)(user, projectId)
+      : null;
+    if (!project) throw new ProjectSelectionError('پروژه انتخاب‌شده یافت نشد یا شما به آن دسترسی ندارید.', 'project_access_denied', 403);
+    return project;
+  }
+
+  const name = String(input.projectName || '').trim();
+  if (!name) throw new ProjectSelectionError('انتخاب پروژه یا نام پروژه جدید الزامی است.', 'missing_selection', 400);
+  return (dependencies.createProject || createProject)(user, {
+    name,
+    description: input.projectDescription,
+    clientName: input.clientName,
+    projectCode: input.projectCode,
+    isConfidential: input.isConfidential === true || input.isConfidential === 'true',
+  });
 }
 
 export function createProject(user: ProjectUser, input: { name: string; description?: string; clientName?: string; projectCode?: string; isConfidential?: boolean }): ProjectDto {

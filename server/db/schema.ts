@@ -276,6 +276,13 @@ export function runMigrations(database = db): void {
         );
       `,
     },
+    {
+      version: 4,
+      sql: `
+        ALTER TABLE videos ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_videos_project ON videos(project_id, created_at DESC);
+      `,
+    },
   ];
 
   for (const migration of versionedMigrations) {

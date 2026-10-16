@@ -67,6 +67,11 @@ Implemented in the current working phase:
 Verification for this phase: `npm test` passed 17 tests, `npm run lint` passed,
 `npm run build` passed, and `git diff --check` passed.
 
+The upload UI now places every new video into an existing or newly created
+project before final storage. The browser's primary upload path is TUS rather
+than an unrelated Rust fallback, and the byte-preserving contract is documented
+in `docs/modernization/MEDIA_INTEGRITY.md`.
+
 ## Next dependency-ordered phase
 
 Complete the TUS/database integration without breaking existing sidecar sessions: create and update the durable session at TUS create/offset/finalize events, return the authoritative application session ID, make finalization idempotent, and add API-level tests for ownership, resume, checksum mismatch, and restart recovery. Only after that should project/revision/publication entities be built on the durable upload boundary.

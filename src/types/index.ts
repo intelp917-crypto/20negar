@@ -9,6 +9,24 @@ export interface User {
   createdAt: string;
 }
 
+export interface Project {
+  id: number;
+  name: string;
+  description: string | null;
+  clientName: string | null;
+  projectCode: string | null;
+  status: 'active' | 'archived';
+  isConfidential: boolean;
+  createdById: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NewProjectInput {
+  name: string;
+  description?: string;
+}
+
 export type VideoStatus = 'Uploaded' | 'PendingReview' | 'Approved' | 'Rejected';
 export type ProcessingStatus = 'Uploading' | 'Processing' | 'Ready' | 'ProcessingFailed';
 export type QualityName = 'Original' | '1080p' | '720p' | '480p' | '360p';
