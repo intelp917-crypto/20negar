@@ -6,6 +6,7 @@ import { db } from '../db/database.ts';
 import { STORAGE_DIR } from '../config.ts';
 import { UpdateService } from '../services/update.service.ts';
 import fs from 'fs';
+import { canCreateRole } from '../authorization/policy.ts';
 
 const router = Router();
 
@@ -73,7 +74,7 @@ router.post('/users', authenticate, requireRole(['SuperAdmin', 'Admin']), async 
       return;
     }
 
-    if (req.user!.role !== 'SuperAdmin' && role === 'SuperAdmin') {
+    if (!canCreateRole(req.user!, role)) {
       res.status(403).json({ error: 'تنها سوپریوزر می‌تواند حساب سوپریوزر ایجاد کند.' });
       return;
     }

@@ -2,6 +2,7 @@ import { db } from '../db/database.ts';
 import { UserEntity, UserRole } from './auth.service.ts';
 import { AuditService } from './audit.service.ts';
 import { NotificationService } from './notification.service.ts';
+import { canReviewVideo } from '../authorization/policy.ts';
 import { TranscoderService } from './transcoder.service.ts';
 
 export interface VideoQualityDto {
@@ -349,12 +350,12 @@ export class VideoService {
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
 
-    if (video.status !== 'PendingReview' || video.processing_status !== 'Ready') {
+    if (!canReviewVideo({ id: supervisor.id, role: supervisor.role || 'Supervisor' }, video)) {
       throw new Error('تنها ویدیوی آماده و در وضعیت انتظار بازبینی قابل تایید است.');
     }
     
     // Authorization: only the assigned supervisor or SuperAdmin can approve
-    if (supervisor.role !== 'SuperAdmin' && video.supervisor_id !== supervisor.id) {
+    if (!canReviewVideo({ id: supervisor.id, role: supervisor.role || 'Supervisor' }, video)) {
       throw new Error('شما مجاز به تایید این ویدیو نیستید. این پروژه به ناظر کیفی دیگری محول شده است.');
     }
 
@@ -438,12 +439,12 @@ export class VideoService {
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
 
-    if (video.status !== 'PendingReview' || video.processing_status !== 'Ready') {
+    if (!canReviewVideo({ id: supervisor.id, role: supervisor.role || 'Supervisor' }, video)) {
       throw new Error('تنها ویدیوی آماده و در وضعیت انتظار بازبینی قابل رد است.');
     }
     
     // Authorization: only the assigned supervisor or SuperAdmin can reject
-    if (supervisor.role !== 'SuperAdmin' && video.supervisor_id !== supervisor.id) {
+    if (!canReviewVideo({ id: supervisor.id, role: supervisor.role || 'Supervisor' }, video)) {
       throw new Error('شما مجاز به رد این ویدیو نیستید. این پروژه به ناظر کیفی دیگری محول شده است.');
     }
 
