@@ -27,6 +27,7 @@ import {
   Activity,
   Layers,
 } from 'lucide-react';
+import type { InternalAccessConfig } from '../api/client.ts';
 
 interface SuperAdminDashboardProps {
   onWatchVideo: (video: Video) => void;
@@ -81,6 +82,11 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   } | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [internalAccess, setInternalAccess] = useState<InternalAccessConfig | null>(null);
+  const [internalUrl, setInternalUrl] = useState('');
+  const [internalEnabled, setInternalEnabled] = useState(false);
+  const [internalInstructions, setInternalInstructions] = useState('');
+  const [internalSaving, setInternalSaving] = useState(false);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -103,7 +109,34 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   useEffect(() => {
     fetchData();
     api.getUpdateStatus().then(setUpdateStatus).catch((err) => console.error('Update status failed:', err));
+    api.getInternalAccess().then((config) => {
+      setInternalAccess(config);
+      setInternalUrl(config.url || '');
+      setInternalEnabled(config.enabled);
+      setInternalInstructions(config.instructions);
+    }).catch((err) => console.error('Internal access status failed:', err));
   }, []);
+
+  const saveInternalAccess = async () => {
+    setInternalSaving(true);
+    try {
+      const config = await api.updateInternalAccess({ enabled: internalEnabled, url: internalUrl, instructions: internalInstructions });
+      setInternalAccess(config);
+      alert('تنظیمات دسترسی داخلی ذخیره شد. برای فعال‌سازی، بررسی سلامت را اجرا کنید.');
+    } catch (err: any) { alert(err.message || 'خطا در ذخیره تنظیمات دسترسی داخلی.'); }
+    finally { setInternalSaving(false); }
+  };
+
+  const verifyInternalAccess = async () => {
+    try {
+      const config = await api.verifyInternalAccess();
+      setInternalAccess(config);
+      alert('سرویس داخلی با موفقیت تأیید شد.');
+    } catch (err: any) {
+      setInternalAccess((current) => current ? { ...current, lastHealthStatus: 'unavailable' } : current);
+      alert(err.message || 'سرویس داخلی قابل تأیید نیست.');
+    }
+  };
 
   const handleForceUpdate = async () => {
     if (isUpdating) return;
@@ -607,6 +640,27 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 <span className="text-zinc-500">پایگاه داده استودیو:</span>{' '}
                 <strong className="text-sky-400 font-bold">پایگاه داده پرسرعت با نمایه‌های چندگانه (طراحی برای حجم بالای ویدیو)</strong>
               </div>
+            </div>
+          </div>
+
+          <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 space-y-4" dir="rtl">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="font-semibold text-zinc-100 text-sm">Network and Internal Access</h4>
+                <p className="text-zinc-500 mt-1">مسیر داخلی باید HTTPS و متعلق به شبکه سازمان باشد؛ برنامه داخلی از همان داده و مجوزهای سرور استفاده می‌کند.</p>
+              </div>
+              <span className={`px-2 py-1 rounded-lg border ${internalAccess?.lastHealthStatus === 'healthy' ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10' : 'text-zinc-400 border-zinc-700'}`}>
+                {internalAccess?.lastHealthStatus || 'unknown'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="space-y-1"><span className="text-zinc-500">آدرس HTTPS داخلی</span><input value={internalUrl} onChange={(e) => setInternalUrl(e.target.value)} placeholder="https://media.internal:3000" className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-700 text-zinc-100 outline-none focus:border-purple-500" /></label>
+              <label className="space-y-1"><span className="text-zinc-500">دستور اتصال کاربران</span><input value={internalInstructions} onChange={(e) => setInternalInstructions(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-700 text-zinc-100 outline-none focus:border-purple-500" /></label>
+            </div>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={internalEnabled} onChange={(e) => setInternalEnabled(e.target.checked)} /> فعال‌سازی دکمه برنامه داخلی برای کاربران مجاز</label>
+            <div className="flex gap-2 flex-wrap">
+              <button onClick={saveInternalAccess} disabled={internalSaving} className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold">{internalSaving ? 'در حال ذخیره...' : 'ذخیره تنظیمات'}</button>
+              <button onClick={verifyInternalAccess} className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold">بررسی امن اتصال</button>
             </div>
           </div>
 

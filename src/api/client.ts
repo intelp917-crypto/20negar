@@ -1,4 +1,4 @@
-import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole } from '../types/index.ts';
+import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole, Project } from '../types/index.ts';
 import { Upload as TusUpload } from 'tus-js-client';
 
 const TOKEN_KEY = 'cineflow_auth_token';
@@ -13,6 +13,14 @@ export function setStoredToken(token: string | null): void {
   } else {
     localStorage.removeItem(TOKEN_KEY);
   }
+}
+
+export interface InternalAccessConfig {
+  enabled: boolean;
+  url: string | null;
+  lastHealthStatus: 'unknown' | 'healthy' | 'unavailable' | 'invalid';
+  lastSuccessfulHealthCheck: string | null;
+  instructions: string;
 }
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -47,9 +55,9 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 }
 
 /**
- * آپلود پرسرعت با موتور راست (negartransfer):
- * تکه‌ها همزمان و موازی ارسال و مستقیم روی offset خودشان در دیسک نوشته می‌شوند.
- * در صورت در دسترس نبودن موتور، به‌صورت خودکار به آپلود TUS برمی‌گردد.
+ * مسیر اصلی آپلود از TUS استفاده می‌کند. TUS فایل را به تکه‌های مستقل ارسال
+ * می‌کند و سرور همان بایت‌ها را در offset درست بازسازی و قبل از نهایی‌سازی
+ * SHA-256 می‌کند؛ هیچ فشرده‌سازی یا تبدیل رسانه‌ای در مسیر original انجام نمی‌شود.
  */
 const FAST_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB
 const FAST_PARALLELISM = 4;
@@ -270,6 +278,9 @@ async function tusUpload(
 }
 
 export const api = {
+  getInternalAccess: () => request<InternalAccessConfig>('/api/internal-access'),
+  updateInternalAccess: (config: { enabled: boolean; url: string; instructions?: string }) => request<InternalAccessConfig>('/api/internal-access', { method: 'PUT', body: JSON.stringify(config) }),
+  verifyInternalAccess: () => request<InternalAccessConfig>('/api/internal-access/health-check', { method: 'POST' }),
   // Auth
   login: (credentials: { username: string; password: string }) =>
     request<{ token: string; user: User }>('/api/auth/login', {
@@ -288,6 +299,7 @@ export const api = {
   getEditors: () => request<User[]>('/api/editors'),
   getCameramen: () => request<User[]>('/api/cameramen'),
   getSupervisors: () => request<User[]>('/api/supervisors'),
+  getProjects: () => request<Project[]>('/api/projects'),
   getAdmins: () => request<User[]>('/api/admins'),
   getAllUsers: () => request<User[]>('/api/users'),
 
@@ -360,14 +372,7 @@ export const api = {
     formData.forEach((value, key) => {
       if (typeof value === 'string') fields[key] = value;
     });
-    const upload = async (): Promise<string> => {
-      try {
-        return await fastUpload(file, fields, onProgress);
-      } catch (err) {
-        console.warn('[Upload] Fast engine unavailable, falling back to TUS:', err);
-        return tusUpload(file, fields, onProgress);
-      }
-    };
+    const upload = () => tusUpload(file, fields, onProgress);
     return upload().then((uploadId) =>
       request<Video>('/api/videos', {
         method: 'POST',
@@ -385,14 +390,7 @@ export const api = {
     formData.forEach((value, key) => {
       if (typeof value === 'string') fields[key] = value;
     });
-    const upload = async (): Promise<string> => {
-      try {
-        return await fastUpload(file, fields, onProgress);
-      } catch (err) {
-        console.warn('[Upload] Fast engine unavailable, falling back to TUS:', err);
-        return tusUpload(file, fields, onProgress);
-      }
-    };
+    const upload = () => tusUpload(file, fields, onProgress);
     return upload().then((uploadId) =>
       request<Video>(`/api/videos/${videoId}/versions`, {
         method: 'POST',

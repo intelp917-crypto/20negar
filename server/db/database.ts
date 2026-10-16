@@ -1,12 +1,16 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import fs from 'fs';
+import path from 'path';
 import { DB_FILE_PATH } from '../config.ts';
 
-class RelationalDatabase {
+export class RelationalDatabase {
   private db: SqlJsDatabase | null = null;
   private isInitialized = false;
   private initPromise: Promise<void> | null = null;
   private persistDebounceTimer: NodeJS.Timeout | null = null;
+  private persistSequence = 0;
+
+  public constructor(private readonly dbFilePath = DB_FILE_PATH) {}
 
   public async initialize(): Promise<void> {
     if (this.isInitialized && this.db) return;
@@ -14,8 +18,8 @@ class RelationalDatabase {
 
     this.initPromise = (async () => {
       const SQL = await initSqlJs();
-      if (fs.existsSync(DB_FILE_PATH)) {
-        const fileBuffer = fs.readFileSync(DB_FILE_PATH);
+      if (fs.existsSync(this.dbFilePath)) {
+        const fileBuffer = fs.readFileSync(this.dbFilePath);
         this.db = new SQL.Database(fileBuffer);
       } else {
         this.db = new SQL.Database();
@@ -44,11 +48,56 @@ class RelationalDatabase {
 
   public persistImmediate(): void {
     if (!this.db) return;
+    if (this.persistDebounceTimer) {
+      clearTimeout(this.persistDebounceTimer);
+      this.persistDebounceTimer = null;
+    }
+
+    const directory = path.dirname(this.dbFilePath);
+    const temporaryPath = path.join(
+      directory,
+      `.${path.basename(this.dbFilePath)}.${process.pid}.${this.persistSequence++}.tmp`,
+    );
+    const backupPath = `${this.dbFilePath}.bak`;
+
     try {
       const data = this.db.export();
       const buffer = Buffer.from(data);
-      fs.writeFileSync(DB_FILE_PATH, buffer);
+
+      // Write beside the database so the final rename is atomic on the same filesystem.
+      fs.writeFileSync(temporaryPath, buffer, { flag: 'wx' });
+      const temporaryHandle = fs.openSync(temporaryPath, 'r+');
+      try {
+        fs.fsyncSync(temporaryHandle);
+      } finally {
+        fs.closeSync(temporaryHandle);
+      }
+
+      if (fs.existsSync(this.dbFilePath)) {
+        // Keep the last complete database recoverable while replacing the primary.
+        if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+        fs.renameSync(this.dbFilePath, backupPath);
+        try {
+          fs.renameSync(temporaryPath, this.dbFilePath);
+        } catch (replaceError) {
+          try {
+            fs.renameSync(backupPath, this.dbFilePath);
+          } catch (restoreError) {
+            console.error('[Database] Failed to restore the previous database file:', restoreError);
+          }
+          throw replaceError;
+        }
+      } else {
+        fs.renameSync(temporaryPath, this.dbFilePath);
+      }
     } catch (err) {
+      if (fs.existsSync(temporaryPath)) {
+        try {
+          fs.unlinkSync(temporaryPath);
+        } catch (cleanupError) {
+          console.error('[Database] Failed to clean up temporary database file:', cleanupError);
+        }
+      }
       console.error('[Database] Failed to persist the database file to disk:', err);
     }
   }
@@ -60,6 +109,13 @@ class RelationalDatabase {
     this.persistDebounceTimer = setTimeout(() => {
       this.persistImmediate();
     }, 150);
+  }
+
+  public dispose(): void {
+    if (this.persistDebounceTimer) {
+      clearTimeout(this.persistDebounceTimer);
+      this.persistDebounceTimer = null;
+    }
   }
 
   public exec(sql: string): void {
@@ -134,8 +190,8 @@ class RelationalDatabase {
   } {
     const db = this.ensureDb();
     let fileSizeBytes = 0;
-    if (fs.existsSync(DB_FILE_PATH)) {
-      fileSizeBytes = fs.statSync(DB_FILE_PATH).size;
+    if (fs.existsSync(this.dbFilePath)) {
+      fileSizeBytes = fs.statSync(this.dbFilePath).size;
     }
 
     const tableNames = ['users', 'videos', 'video_qualities', 'video_reviews', 'audit_logs', 'notifications', 'processing_jobs'];

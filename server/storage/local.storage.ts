@@ -14,9 +14,17 @@ export class LocalFileStorage implements IFileStorage {
   }
 
   public getPhysicalPath(fileKey: string): string {
-    // Sanitize to prevent path traversal
-    const safeKey = fileKey.replace(/^(\.\.[\/\\])+/, '').replace(/^[\\\/]+/, '');
-    return path.resolve(this.baseDir, safeKey);
+    if (!fileKey || path.isAbsolute(fileKey)) {
+      throw new Error('Storage key must be a non-empty relative path.');
+    }
+
+    const resolved = path.resolve(this.baseDir, fileKey);
+    const relative = path.relative(this.baseDir, resolved);
+    if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error('Storage key escapes the configured storage root.');
+    }
+
+    return resolved;
   }
 
   public async saveFile(destinationKey: string, content: Buffer | Uint8Array): Promise<string> {

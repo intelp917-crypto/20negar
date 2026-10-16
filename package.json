@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "build:transfer": "cargo build --release --manifest-path rust/negartransfer/Cargo.toml",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx --test tests/local-storage.test.ts tests/upload.service.test.ts tests/database-persistence.test.ts tests/authorization-policy.test.ts tests/project-service.test.ts tests/internal-access.test.ts"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",

@@ -13,6 +13,7 @@ import {
   Menu,
   Film,
   Crown,
+  Network,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -26,6 +27,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [internalUrl, setInternalUrl] = useState<string | null>(null);
+  const [internalState, setInternalState] = useState<'unknown' | 'available' | 'unavailable'>('unknown');
   const notificationRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
@@ -43,6 +46,32 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
     const interval = setInterval(fetchNotifications, 10000);
     return () => clearInterval(interval);
   }, [user]);
+
+  useEffect(() => {
+    let active = true;
+    api.getInternalAccess().then((config) => {
+      if (active && config.enabled && config.url) {
+        setInternalUrl(config.url);
+        setInternalState(config.lastHealthStatus === 'healthy' ? 'available' : 'unknown');
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [user]);
+
+  const openInternalApp = async () => {
+    if (!internalUrl) return;
+    setInternalState('unknown');
+    try {
+      const response = await fetch(`${internalUrl}/api/health`, { credentials: 'omit', signal: AbortSignal.timeout(3000) });
+      const body = await response.json();
+      if (!response.ok || body?.service !== '20Negar Studio API') throw new Error('unavailable');
+      setInternalState('available');
+      window.location.assign(internalUrl);
+    } catch {
+      setInternalState('unavailable');
+      window.alert('دسترسی داخلی در حال حاضر قابل تأیید نیست. اتصال عمومی حفظ شد.');
+    }
+  };
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -115,6 +144,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
   return (
     <header className="h-16 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 sticky top-0 z-40 px-4 lg:px-6 flex items-center justify-between" dir="rtl">
       <div className="flex items-center gap-3">
+        {internalUrl && (
+          <button onClick={openInternalApp} className={`hidden sm:flex items-center gap-1.5 px-2.5 py-2 rounded-xl border text-xs font-semibold transition-colors ${internalState === 'available' ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10' : internalState === 'unavailable' ? 'border-rose-500/40 text-rose-300 bg-rose-500/10' : 'border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-900'}`} title="بررسی و ورود به برنامه داخلی">
+            <Network className="w-4 h-4" />
+            <span>برنامه داخلی</span>
+          </button>
+        )}
         <button
           onClick={onToggleSidebar}
           className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-900 lg:hidden"

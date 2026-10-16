@@ -2,7 +2,9 @@ import { db } from '../db/database.ts';
 import { UserEntity, UserRole } from './auth.service.ts';
 import { AuditService } from './audit.service.ts';
 import { NotificationService } from './notification.service.ts';
+import { canReviewVideo } from '../authorization/policy.ts';
 import { TranscoderService } from './transcoder.service.ts';
+import { ProjectDto } from './project.service.ts';
 
 export interface VideoQualityDto {
   id: number;
@@ -57,6 +59,8 @@ export interface VideoDto {
   qualities?: VideoQualityDto[];
   reviews?: VideoReviewDto[];
   processingDetails?: any;
+  projectId: number | null;
+  project: ProjectDto | null;
 }
 
 export interface VideoFilters {
@@ -86,12 +90,17 @@ export class VideoService {
         v.original_resolution as originalResolution, v.file_size as fileSize,
         v.version_number as versionNumber, v.parent_video_id as parentVideoId,
         v.rejection_reason as rejectionReason, v.created_at as createdAt,
-        v.updated_at as updatedAt, v.approved_at as approvedAt, v.rejected_at as rejectedAt
+         v.updated_at as updatedAt, v.approved_at as approvedAt, v.rejected_at as rejectedAt,
+         p.id as projectId, p.name as projectName, p.description as projectDescription,
+         p.client_name as projectClientName, p.project_code as projectCode, p.status as projectStatus,
+         p.is_confidential as projectIsConfidential, p.created_by_id as projectCreatedById,
+         p.created_at as projectCreatedAt, p.updated_at as projectUpdatedAt
       FROM videos v
       JOIN users ed ON v.editor_id = ed.id
       JOIN users sp ON v.supervisor_id = sp.id
       LEFT JOIN users ad ON v.admin_id = ad.id
       LEFT JOIN users ub ON v.uploaded_by_id = ub.id
+      LEFT JOIN projects p ON v.project_id = p.id
       WHERE 1=1
     `;
     const params: any[] = [];
@@ -157,7 +166,7 @@ export class VideoService {
         break;
     }
 
-    const videos = db.query<VideoDto>(sql, params);
+    const videos = db.query<any>(sql, params).map((video) => this.withProject(video));
 
     // Attach available qualities for each video
     for (const v of videos) {
@@ -184,15 +193,21 @@ export class VideoService {
         v.original_resolution as originalResolution, v.file_size as fileSize,
         v.version_number as versionNumber, v.parent_video_id as parentVideoId,
         v.rejection_reason as rejectionReason, v.created_at as createdAt,
-        v.updated_at as updatedAt, v.approved_at as approvedAt, v.rejected_at as rejectedAt
+         v.updated_at as updatedAt, v.approved_at as approvedAt, v.rejected_at as rejectedAt,
+         p.id as projectId, p.name as projectName, p.description as projectDescription,
+         p.client_name as projectClientName, p.project_code as projectCode, p.status as projectStatus,
+         p.is_confidential as projectIsConfidential, p.created_by_id as projectCreatedById,
+         p.created_at as projectCreatedAt, p.updated_at as projectUpdatedAt
       FROM videos v
       JOIN users ed ON v.editor_id = ed.id
       JOIN users sp ON v.supervisor_id = sp.id
       LEFT JOIN users ad ON v.admin_id = ad.id
       LEFT JOIN users ub ON v.uploaded_by_id = ub.id
+      LEFT JOIN projects p ON v.project_id = p.id
       WHERE v.id = ?
     `;
-    const video = db.queryOne<VideoDto>(sql, [videoId]);
+    const rawVideo = db.queryOne<any>(sql, [videoId]);
+    const video = rawVideo ? this.withProject(rawVideo) : null;
     if (!video) return null;
 
     // Strict Authorization Check:
@@ -263,6 +278,7 @@ export class VideoService {
     supervisorId: number;
     uploadedById?: number | null;
     parentVideoId?: number | null;
+    projectId?: number | null;
     versionNumber?: number;
     ipAddress?: string;
   }): VideoDto {
@@ -286,10 +302,10 @@ export class VideoService {
 
     const res = db.run(
       `INSERT INTO videos (
-        title, original_filename, original_path, editor_id, supervisor_id, uploaded_by_id,
+         title, original_filename, original_path, editor_id, supervisor_id, uploaded_by_id, project_id,
         status, processing_status, file_size, version_number, parent_video_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         params.title,
         params.originalFilename,
@@ -297,6 +313,7 @@ export class VideoService {
         params.editorId,
         params.supervisorId,
         params.uploadedById ?? null,
+        params.projectId ?? null,
         status,
         processingStatus,
         params.fileSize,
@@ -340,6 +357,21 @@ export class VideoService {
     })!;
   }
 
+  private static withProject(video: any): VideoDto {
+    const projectId = video.projectId == null ? null : Number(video.projectId);
+    video.projectId = projectId;
+    video.project = projectId === null ? null : {
+      id: projectId, name: video.projectName, description: video.projectDescription ?? null,
+      clientName: video.projectClientName ?? null, projectCode: video.projectCode ?? null,
+      status: video.projectStatus, isConfidential: Boolean(video.projectIsConfidential),
+      createdById: Number(video.projectCreatedById), createdAt: video.projectCreatedAt, updatedAt: video.projectUpdatedAt,
+    };
+    delete video.projectName; delete video.projectDescription; delete video.projectClientName;
+    delete video.projectCode; delete video.projectStatus; delete video.projectIsConfidential;
+    delete video.projectCreatedById; delete video.projectCreatedAt; delete video.projectUpdatedAt;
+    return video as VideoDto;
+  }
+
   public static approveVideo(
     videoId: number,
     supervisor: { id: number; displayName: string; ipAddress?: string; role?: UserRole },
@@ -348,9 +380,13 @@ export class VideoService {
   ): VideoDto {
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
+
+    if (!canReviewVideo({ id: supervisor.id, role: supervisor.role || 'Supervisor' }, video)) {
+      throw new Error('تنها ویدیوی آماده و در وضعیت انتظار بازبینی قابل تایید است.');
+    }
     
     // Authorization: only the assigned supervisor or SuperAdmin can approve
-    if (supervisor.role !== 'SuperAdmin' && video.supervisor_id !== supervisor.id) {
+    if (!canReviewVideo({ id: supervisor.id, role: supervisor.role || 'Supervisor' }, video)) {
       throw new Error('شما مجاز به تایید این ویدیو نیستید. این پروژه به ناظر کیفی دیگری محول شده است.');
     }
 
@@ -370,7 +406,7 @@ export class VideoService {
     }
 
     db.run(
-      `UPDATE videos SET status = 'Approved', approved_at = ?, updated_at = ?, rejection_reason = NULL, admin_id = COALESCE(?, admin_id) WHERE id = ?`,
+      `UPDATE videos SET status = 'Approved', approved_at = ?, rejected_at = NULL, updated_at = ?, rejection_reason = NULL, admin_id = COALESCE(?, admin_id) WHERE id = ?`,
       [now, now, targetAdminId, videoId]
     );
 
@@ -433,15 +469,19 @@ export class VideoService {
 
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
+
+    if (!canReviewVideo({ id: supervisor.id, role: supervisor.role || 'Supervisor' }, video)) {
+      throw new Error('تنها ویدیوی آماده و در وضعیت انتظار بازبینی قابل رد است.');
+    }
     
     // Authorization: only the assigned supervisor or SuperAdmin can reject
-    if (supervisor.role !== 'SuperAdmin' && video.supervisor_id !== supervisor.id) {
+    if (!canReviewVideo({ id: supervisor.id, role: supervisor.role || 'Supervisor' }, video)) {
       throw new Error('شما مجاز به رد این ویدیو نیستید. این پروژه به ناظر کیفی دیگری محول شده است.');
     }
 
     const now = new Date().toISOString();
     db.run(
-      `UPDATE videos SET status = 'Rejected', rejected_at = ?, rejection_reason = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE videos SET status = 'Rejected', rejected_at = ?, rejection_reason = ?, approved_at = NULL, admin_id = NULL, updated_at = ? WHERE id = ?`,
       [now, rejectionReason.trim(), now, videoId]
     );
 

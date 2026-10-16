@@ -9,6 +9,7 @@ import { videoUpload } from '../middleware/upload.middleware.ts';
 import { PRIVATE_VIDEOS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
 import { AuditService } from '../services/audit.service.ts';
 import { streamFromTransferEngine } from '../services/transfer.service.ts';
+import { resolveVideoProject, ProjectSelectionError } from '../services/project.service.ts';
 import { loadSession as loadChunkSession, dataFile as chunkDataFile, cleanupSession as cleanupChunkSession } from './upload.routes.ts';
 
 const router = Router();
@@ -135,6 +136,16 @@ router.post(
         return;
       }
 
+      // Resolve and authorize the project before moving the uploaded file out of temp storage.
+      const project = resolveVideoProject(req.user!, {
+        projectId: req.body.projectId,
+        projectName: req.body.projectName,
+        projectDescription: req.body.projectDescription,
+        clientName: req.body.clientName,
+        projectCode: req.body.projectCode,
+        isConfidential: req.body.isConfidential,
+      });
+
       let tempPath: string;
       let originalName: string;
       let fileSize: number;
@@ -175,6 +186,7 @@ router.post(
         editorId: req.user!.id,
         supervisorId: parseInt(supervisorId, 10),
         uploadedById: isCameraman ? req.user!.id : null,
+        projectId: project.id,
         ipAddress: req.ip,
       });
 
@@ -191,7 +203,8 @@ router.post(
           fs.unlinkSync(req.file.path);
         } catch {}
       }
-      res.status(500).json({ error: err.message || 'خطا در بارگذاری ویدیو.' });
+      const status = err instanceof ProjectSelectionError ? err.status : 500;
+      res.status(status).json({ error: err.message || 'خطا در بارگذاری ویدیو.' });
     }
   }
 );
@@ -252,6 +265,7 @@ router.post(
         editorId: req.user!.id,
         supervisorId,
         parentVideoId: parentId,
+        projectId: parentVideo.projectId,
         versionNumber: parentVideo.versionNumber + 1,
         ipAddress: req.ip,
       });
@@ -446,11 +460,17 @@ router.get('/:id/stream', authenticate, async (req: Request, res: Response): Pro
     const range = req.headers.range;
 
     if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (!match || (!match[1] && !match[2])) {
+        res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+        return;
+      }
 
-      if (start >= fileSize) {
+      const start = match[1] ? Number(match[1]) : Math.max(0, fileSize - Number(match[2]));
+      const requestedEnd = match[2] ? Number(match[2]) : fileSize - 1;
+      const end = Math.min(requestedEnd, fileSize - 1);
+
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= fileSize || end < start) {
         res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
         return;
       }
@@ -482,13 +502,7 @@ router.get('/:id/stream', authenticate, async (req: Request, res: Response): Pro
 // GET /api/videos/:id/hls/* - Secure HLS Playlist & Segments Delivery
 router.get(
   '/:id/hls/*',
-  (req: Request, res: Response, next: any): void => {
-    const subPath = req.params[0] || 'master.m3u8';
-    if (subPath.endsWith('.ts')) {
-      return next();
-    }
-    authenticate(req, res, next);
-  },
+  authenticate,
   async (req: Request, res: Response): Promise<void> => {
     try {
       const videoId = parseInt(req.params.id, 10);
@@ -501,8 +515,14 @@ router.get(
       }
 
       const subPath = req.params[0] || 'master.m3u8';
-      const cleanSubPath = path.normalize(subPath).replace(/^(\.\.[\/\\])+/, '');
-      const hlsFilePath = path.join(PRIVATE_HLS_DIR, `video_${videoId}`, cleanSubPath);
+      const hlsRoot = path.resolve(PRIVATE_HLS_DIR, `video_${videoId}`);
+      const hlsFilePath = path.resolve(hlsRoot, subPath);
+      const relativeHlsPath = path.relative(hlsRoot, hlsFilePath);
+      if (relativeHlsPath === '' || relativeHlsPath.startsWith(`..${path.sep}`) || path.isAbsolute(relativeHlsPath)) {
+        res.status(400).json({ error: 'مسیر فایل HLS نامعتبر است.' });
+        return;
+      }
+      const cleanSubPath = relativeHlsPath.replace(/\\/g, '/');
 
       if (!fs.existsSync(hlsFilePath)) {
         res.status(404).json({ error: 'فایل HLS مورد نظر هنوز آماده نشده است.' });
