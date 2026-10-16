@@ -5,6 +5,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
 import { STORAGE_DIR } from '../config.ts';
+import { createUploadSession, updateUploadSession } from '../services/upload.service.ts';
 
 /**
  * سیستم آپلود موازی و مقاوم در برابر قطعی (Parallel Chunked Upload)
@@ -275,6 +276,16 @@ router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin',
     fs.closeSync(fd);
 
     saveSession(meta);
+    createUploadSession({
+      id: meta.id,
+      ownerId: meta.userId,
+      filename: meta.originalName,
+      expectedSize: meta.fileSize,
+      mime: meta.mimeType,
+      expiresAt: new Date(meta.createdAt + SESSION_TTL).toISOString(),
+      tempKey: path.relative(STORAGE_DIR, dataFile(meta.id)).replace(/\\/g, '/'),
+      checksumExpected: meta.expectedChecksum ?? null,
+    });
     res.status(201).json({
       uploadId: meta.id,
       chunkSize: meta.chunkSize,
@@ -359,6 +370,8 @@ router.put(
         saveSession(meta);
       }
 
+      updateUploadSession(meta.userId, meta.id, { state: 'uploading', actualSize: meta.received.length === meta.totalChunks ? meta.fileSize : undefined });
+
       // دریافت متادیتای فرم (عنوان، ناظر و...) همراه اولین چانک
       const incomingMeta = req.headers['x-upload-meta'];
       if (incomingMeta) {
@@ -399,6 +412,16 @@ router.post('/:id/complete', authenticate, requireRole(['Editor', 'Cameraman', '
   }
 
   const verified = verifySessionIntegrity(meta);
+  updateUploadSession(meta.userId, meta.id, {
+    state: verified.verificationResult === 'mismatch' ? 'failed' : 'completed',
+    actualSize: stat.size,
+    checksumActual: verified.actualChecksum,
+    verificationStatus: verified.verificationResult === 'verified' ? 'verified' : verified.verificationResult === 'mismatch' ? 'mismatch' : 'pending',
+    verifiedAt: verified.verifiedAt ? new Date(verified.verifiedAt).toISOString() : null,
+    errorCode: verified.verificationResult === 'mismatch' ? 'CHECKSUM_MISMATCH' : null,
+    errorMessage: verified.verificationResult === 'mismatch' ? 'Uploaded bytes did not match the expected SHA-256 checksum.' : null,
+  });
+
   if (verified.verificationResult === 'mismatch') {
     res.status(400).json({
       error: 'چک‌سام فایل با مقدار مورد انتظار مطابقت ندارد.',

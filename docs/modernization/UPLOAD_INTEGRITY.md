@@ -15,3 +15,17 @@ finalization.
 
 Metadata writes use a flushed temporary file followed by a rename, so a process
 interruption cannot leave a partially-written JSON document at the session path.
+
+## Durable foundation
+
+New custom chunk sessions are also recorded in the additive `upload_sessions`
+database table through `server/services/upload.service.ts`. The database record
+stores ownership, expected/actual size, storage keys, lifecycle state, expiry,
+checksum verification, and safe failure details. The sidecar JSON remains the
+transport compatibility record during this incremental migration; it is not yet
+the canonical TUS finalization implementation.
+
+Database exports now use a same-directory temporary file, `fsync`, atomic rename,
+and a `.bak` copy of the previous valid database file. This protects the last
+persisted file from a partial direct overwrite, but it is not a substitute for a
+verified backup/restore procedure.

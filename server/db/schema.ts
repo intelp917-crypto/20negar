@@ -1,6 +1,11 @@
 import { db } from './database.ts';
 
 export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT UNIQUE NOT NULL,
@@ -105,10 +110,14 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_i
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_comp ON audit_logs(user_id, created_at DESC);
 `;
 
-export function runMigrations(): void {
+export function runMigrations(database = db): void {
+  // Create missing base tables first so additive compatibility checks below
+  // behave consistently on a fresh database and an existing legacy database.
+  database.exec(SCHEMA_SQL);
+
   // Migration: users.role — ensure every supported role is allowed by the CHECK constraint.
   try {
-    const tableInfo = db.queryOne<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'");
+    const tableInfo = database.queryOne<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'");
     const requiredRoles = ['SuperAdmin', 'Admin', 'Editor', 'Supervisor', 'Cameraman'];
     const missingRoles = tableInfo
       ? requiredRoles.filter((r) => !tableInfo.sql.includes(`'${r}'`))
@@ -116,7 +125,7 @@ export function runMigrations(): void {
 
     if (tableInfo && missingRoles.length > 0) {
       console.log(`[Migration] Rebuilding users table to allow roles: ${missingRoles.join(', ')}`);
-      db.exec(`
+      database.exec(`
         PRAGMA foreign_keys = OFF;
         CREATE TABLE users_migrated (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,11 +151,11 @@ export function runMigrations(): void {
 
   // Migration: videos.admin_id (assign a video to a specific admin).
   try {
-    db.query('SELECT admin_id FROM videos LIMIT 1');
+    database.query('SELECT admin_id FROM videos LIMIT 1');
   } catch {
     try {
       console.log('[Migration] Adding videos.admin_id column for admin assignment...');
-      db.exec('ALTER TABLE videos ADD COLUMN admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+      database.exec('ALTER TABLE videos ADD COLUMN admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
       console.log('[Migration] videos.admin_id column added successfully.');
     } catch (err) {
       console.warn('[Migration] Could not add videos.admin_id:', err);
@@ -155,16 +164,64 @@ export function runMigrations(): void {
 
   // Migration: videos.uploaded_by_id (records the Cameraman uploader, if any).
   try {
-    db.query('SELECT uploaded_by_id FROM videos LIMIT 1');
+    database.query('SELECT uploaded_by_id FROM videos LIMIT 1');
   } catch {
     try {
       console.log('[Migration] Adding videos.uploaded_by_id column for cameraman uploads...');
-      db.exec('ALTER TABLE videos ADD COLUMN uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+      database.exec('ALTER TABLE videos ADD COLUMN uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
       console.log('[Migration] videos.uploaded_by_id column added successfully.');
     } catch (err) {
       console.warn('[Migration] Could not add videos.uploaded_by_id:', err);
     }
   }
 
-  db.exec(SCHEMA_SQL);
+  // Versioned additive migrations. Each version is recorded only after its SQL
+  // has completed, so startup can safely retry an interrupted migration.
+  const currentVersion = database.queryOne<{ version: number }>(
+    'SELECT COALESCE(MAX(version), 0) as version FROM schema_migrations'
+  )?.version ?? 0;
+  const versionedMigrations: Array<{ version: number; sql: string }> = [
+    {
+      version: 1,
+      sql: `
+        CREATE TABLE IF NOT EXISTS upload_sessions (
+          id TEXT PRIMARY KEY,
+          owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          filename TEXT NOT NULL,
+          expected_size INTEGER NOT NULL CHECK(expected_size >= 0),
+          actual_size INTEGER CHECK(actual_size IS NULL OR actual_size >= 0),
+          mime TEXT NOT NULL,
+          temp_key TEXT,
+          final_key TEXT,
+          state TEXT NOT NULL CHECK(state IN ('pending', 'uploading', 'completed', 'finalizing', 'finalized', 'failed', 'expired', 'cancelled')) DEFAULT 'pending',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          checksum_expected TEXT,
+          checksum_actual TEXT,
+          verification_status TEXT NOT NULL CHECK(verification_status IN ('pending', 'verified', 'mismatch', 'failed')) DEFAULT 'pending',
+          verified_at TEXT,
+          finalized_video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL,
+          error_code TEXT,
+          error_message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_upload_sessions_owner_state ON upload_sessions(owner_id, state, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_upload_sessions_expiry ON upload_sessions(expires_at);
+      `,
+    },
+  ];
+
+  for (const migration of versionedMigrations) {
+    if (migration.version <= currentVersion) continue;
+    const now = new Date().toISOString();
+    database.exec(`BEGIN;`);
+    try {
+      database.exec(migration.sql);
+      database.run('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)', [migration.version, now]);
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
 }
