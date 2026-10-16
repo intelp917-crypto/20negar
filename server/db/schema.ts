@@ -209,6 +209,62 @@ export function runMigrations(database = db): void {
         CREATE INDEX IF NOT EXISTS idx_upload_sessions_expiry ON upload_sessions(expires_at);
       `,
     },
+    {
+      version: 2,
+      sql: `
+        CREATE TABLE IF NOT EXISTS projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          description TEXT,
+          client_name TEXT,
+          project_code TEXT UNIQUE,
+          status TEXT NOT NULL CHECK(status IN ('active', 'archived')) DEFAULT 'active',
+          is_confidential INTEGER NOT NULL DEFAULT 0 CHECK(is_confidential IN (0, 1)),
+          created_by_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_members (
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          access_level TEXT NOT NULL CHECK(access_level IN ('manager', 'member', 'viewer')) DEFAULT 'member',
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(project_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS project_categories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          parent_id INTEGER REFERENCES project_categories(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(project_id, parent_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS publication_destinations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          target_account TEXT,
+          created_at TEXT NOT NULL,
+          UNIQUE(project_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS publication_assignments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          destination_id INTEGER NOT NULL REFERENCES publication_destinations(id) ON DELETE RESTRICT,
+          video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE RESTRICT,
+          assigned_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          status TEXT NOT NULL CHECK(status IN ('assigned', 'downloaded', 'published', 'failed', 'cancelled')) DEFAULT 'assigned',
+          instructions TEXT,
+          published_url TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(destination_id, video_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id, project_id);
+        CREATE INDEX IF NOT EXISTS idx_project_categories_project ON project_categories(project_id, parent_id);
+        CREATE INDEX IF NOT EXISTS idx_publication_assignments_user ON publication_assignments(assigned_user_id, status);
+      `,
+    },
   ];
 
   for (const migration of versionedMigrations) {

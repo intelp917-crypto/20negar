@@ -111,6 +111,13 @@ export class RelationalDatabase {
     }, 150);
   }
 
+  public dispose(): void {
+    if (this.persistDebounceTimer) {
+      clearTimeout(this.persistDebounceTimer);
+      this.persistDebounceTimer = null;
+    }
+  }
+
   public exec(sql: string): void {
     const db = this.ensureDb();
     db.exec(sql);
