@@ -38,7 +38,7 @@ Implemented and committed as `f06e847` (`refactor: centralize review authorizati
 
 Environment: Windows, Node.js `v24.21.0`, npm `11.19.0`.
 
-- `npm test` — PASS, 12 tests passed.
+- `npm test` — PASS, 17 tests passed.
 - `npm run lint` — PASS, TypeScript completed with no errors.
 - `npm run build` — PASS, Vite production build completed.
 - `cargo check --manifest-path rust/negartransfer/Cargo.toml` — PASS.
@@ -47,11 +47,11 @@ Environment: Windows, Node.js `v24.21.0`, npm `11.19.0`.
 
 ## Remaining blockers and risks
 
-- The TUS path still converts into the legacy sidecar session and is not yet the sole database-backed finalization authority.
+- The TUS path now records ownership, checksum, and lifecycle state in `upload_sessions`, but still converts into the legacy sidecar session for the existing video-creation contract.
 - The Rust fast path and custom chunk path remain available for compatibility; a tested deprecation or common-session adapter is still required.
-- The durable upload service is currently used by the custom chunk compatibility path, not all TUS lifecycle callbacks.
-- Projects, memberships, categories, immutable revision identities, publication destinations, publisher assignments, and publication-state tracking are not implemented.
-- Internal App configuration and verified network switching are not implemented.
+- The durable upload service is used by both the custom chunk compatibility path and TUS lifecycle callbacks; a single finalization authority and API-level TUS integration tests remain.
+- Project, membership, category, destination, and assignment foundations exist; immutable revision identity and full publication workflow remain.
+- Internal App configuration and verified health/switching foundations exist; real LAN/certificate/browser-origin scenarios remain untested.
 - No external-LAN benchmark, production deployment, backup restoration against organizational data, or large-file transfer benchmark was executed.
 - Query-string bearer tokens remain supported for browser media elements and remain a documented security risk until scoped short-lived media URLs exist.
 
@@ -63,6 +63,9 @@ Implemented in the current working phase:
 - Added project listing, access-controlled lookup, creation, and membership APIs at `/api/projects`.
 - Added SuperAdmin-configured Internal App settings at `/api/internal-access`.
 - Added HTTPS/private-host validation, server-side health verification, user-facing Internal App navigation, and SuperAdmin configuration UI.
+
+Verification for this phase: `npm test` passed 17 tests, `npm run lint` passed,
+`npm run build` passed, and `git diff --check` passed.
 
 ## Next dependency-ordered phase
 
