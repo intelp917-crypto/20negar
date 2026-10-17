@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Video } from '../types/index.ts';
+import { Video, ProjectFolder } from '../types/index.ts';
 import { api } from '../api/client.ts';
+import { useAuth } from '../context/AuthContext.tsx';
 import { VideoCard } from '../components/VideoCard.tsx';
+import { ProjectFolderGrid, ProjectFolderBar } from '../components/ProjectFolders.tsx';
 import { UploadModal } from '../components/UploadModal.tsx';
 import { NewVersionModal } from '../components/NewVersionModal.tsx';
+import { cachedLoad, folderCacheKey, videosCacheKey, invalidateProjectCache } from '../api/projectCache.ts';
 import {
   UploadCloud,
   Film,
@@ -27,8 +30,13 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
   onViewDetails,
   activeFilter = 'all',
 }) => {
+  const { user } = useAuth();
+  const [folders, setFolders] = useState<ProjectFolder[]>([]);
+  const [isFoldersLoading, setIsFoldersLoading] = useState(true);
+  const [foldersError, setFoldersError] = useState<string | null>(null);
+  const [activeFolder, setActiveFolder] = useState<ProjectFolder | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [currentTab, setCurrentTab] = useState<string>(activeFilter);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [revisionVideo, setRevisionVideo] = useState<Video | null>(null);
@@ -39,10 +47,34 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
     setCurrentTab(activeFilter);
   }, [activeFilter]);
 
-  const fetchVideos = async () => {
+  /** فقط فهرست سبک پوشه‌ها در ورود به پنل گرفته می‌شود؛ هیچ ویدیویی قبل از ورود به پوشه واکشی نمی‌شود. */
+  const fetchFolders = async (force = false) => {
+    if (!user) return;
+    setIsFoldersLoading(true);
+    setFoldersError(null);
+    try {
+      const data = await cachedLoad(folderCacheKey(user.id, user.role), () => api.getProjectFolders(), force);
+      setFolders(data);
+      // شمارش‌های پوشه باز را هم تازه نگه می‌داریم تا بعد از آپلود/حذف ناهماهنگ نشود.
+      setActiveFolder((current) => current ? data.find((folder) => folder.projectId === current.projectId) ?? null : null);
+    } catch (err: any) {
+      console.error('Failed to load editor project folders:', err);
+      setFoldersError(err?.message || 'خطا در دریافت پوشه‌های پروژه.');
+    } finally {
+      setIsFoldersLoading(false);
+    }
+  };
+
+  const fetchVideos = async (folder: ProjectFolder, force = false) => {
+    if (!user) return;
     setIsLoading(true);
     try {
-      const data = await api.getVideos();
+      const key = videosCacheKey(user.id, user.role, folder.projectId);
+      const data = await cachedLoad(
+        key,
+        () => api.getVideos({ projectId: folder.projectId === null ? 'none' : folder.projectId }),
+        force
+      );
       setVideos(data);
     } catch (err) {
       console.error('Failed to load editor videos:', err);
@@ -52,8 +84,36 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
   };
 
   useEffect(() => {
-    fetchVideos();
-  }, []);
+    fetchFolders();
+  }, [user?.id, user?.role]);
+
+  useEffect(() => {
+    if (activeFolder) fetchVideos(activeFolder);
+    else setVideos([]);
+  }, [activeFolder?.projectId]);
+
+  const openFolder = (folder: ProjectFolder) => {
+    setActiveFolder(folder);
+    setVideos([]);
+  };
+
+  const closeFolder = () => {
+    setActiveFolder(null);
+    setVideos([]);
+    setCurrentTab(activeFilter);
+  };
+
+  const refreshAll = () => {
+    invalidateProjectCache();
+    fetchFolders(true);
+    if (activeFolder) fetchVideos(activeFolder, true);
+  };
+
+  const refreshAfterMutation = () => {
+    invalidateProjectCache();
+    fetchFolders(true);
+    if (activeFolder) fetchVideos(activeFolder, true);
+  };
 
   const filteredVideos = videos.filter((v) => {
     if (currentTab === 'pending' || currentTab === 'pending-review') return v.status === 'PendingReview';
@@ -62,10 +122,22 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
     return true;
   });
 
-  const totalCount = videos.length;
-  const pendingCount = videos.filter((v) => v.status === 'PendingReview').length;
-  const approvedCount = videos.filter((v) => v.status === 'Approved').length;
-  const rejectedCount = videos.filter((v) => v.status === 'Rejected').length;
+  // شمارش‌ها از تجمیع پوشه‌ها می‌آید تا بدون واکشی همه ویدیوها هم دقیق باشد.
+  const scopeCounts = activeFolder
+    ? activeFolder
+    : folders.reduce(
+        (acc, folder) => ({
+          videoCount: acc.videoCount + folder.videoCount,
+          pendingCount: acc.pendingCount + folder.pendingCount,
+          approvedCount: acc.approvedCount + folder.approvedCount,
+          rejectedCount: acc.rejectedCount + folder.rejectedCount,
+        }),
+        { videoCount: 0, pendingCount: 0, approvedCount: 0, rejectedCount: 0 }
+      );
+  const totalCount = scopeCounts.videoCount;
+  const pendingCount = scopeCounts.pendingCount;
+  const approvedCount = scopeCounts.approvedCount;
+  const rejectedCount = scopeCounts.rejectedCount;
 
   return (
     <div className="space-y-6" dir="rtl">
@@ -85,11 +157,11 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
 
         <div className="flex items-center gap-3">
           <button
-            onClick={fetchVideos}
+            onClick={refreshAll}
             className="p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 text-xs flex items-center gap-1.5 transition-colors"
             title="بروزرسانی لیست"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading || isFoldersLoading ? 'animate-spin' : ''}`} />
           </button>
 
           <button
@@ -164,6 +236,19 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
           <div className="text-2xl font-bold font-mono text-rose-400">{rejectedCount}</div>
         </button>
       </div>
+
+      {!activeFolder ? (
+        <ProjectFolderGrid
+          folders={folders}
+          isLoading={isFoldersLoading}
+          error={foldersError}
+          onOpen={openFolder}
+          onRetry={() => fetchFolders(true)}
+          title="پوشه پروژه‌های من"
+        />
+      ) : (
+        <>
+      <ProjectFolderBar folder={activeFolder} onBack={closeFolder} loadedCount={isLoading ? undefined : videos.length} />
 
       {/* Tabs Navigation */}
       <div className="flex items-center gap-1.5 border-b border-zinc-800 pb-2 text-xs font-semibold">
@@ -265,13 +350,18 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
           ))}
         </div>
       )}
+        </>
+      )}
 
       {/* Upload Modal */}
       <UploadModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
         onSuccess={(newVid) => {
-          setVideos((prev) => [newVid, ...prev]);
+          if (activeFolder && newVid.projectId === activeFolder.projectId) {
+            setVideos((prev) => [newVid, ...prev]);
+          }
+          refreshAfterMutation();
         }}
       />
 
@@ -284,6 +374,7 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
           onSuccess={(revisedVid) => {
             setVideos((prev) => [revisedVid, ...prev.filter((v) => v.id !== revisedVid.id)]);
             setRevisionVideo(null);
+            refreshAfterMutation();
           }}
         />
       )}
@@ -324,6 +415,7 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
                     await api.deleteVideo(videoToDelete.id);
                     setVideos((prev) => prev.filter((v) => v.id !== videoToDelete.id));
                     setVideoToDelete(null);
+                    refreshAfterMutation();
                   } catch (err: any) {
                     alert(err.message || 'خطا در حذف ویدیو.');
                   } finally {

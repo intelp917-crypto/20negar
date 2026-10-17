@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Video, User } from '../types/index.ts';
+import { Video, User, ProjectFolder } from '../types/index.ts';
 import { api } from '../api/client.ts';
+import { useAuth } from '../context/AuthContext.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { VideoCard } from '../components/VideoCard.tsx';
+import { ProjectFolderGrid, ProjectFolderBar } from '../components/ProjectFolders.tsx';
+import { cachedLoad, folderCacheKey, videosCacheKey, invalidateProjectCache } from '../api/projectCache.ts';
 import { ReviewModal } from '../components/ReviewModal.tsx';
 import {
   Shield,
@@ -28,9 +31,14 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   activeFilter = 'pending',
 }) => {
   const toast = useToast();
+  const { user } = useAuth();
+  const [folders, setFolders] = useState<ProjectFolder[]>([]);
+  const [isFoldersLoading, setIsFoldersLoading] = useState(true);
+  const [foldersError, setFoldersError] = useState<string | null>(null);
+  const [activeFolder, setActiveFolder] = useState<ProjectFolder | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
   const [admins, setAdmins] = useState<User[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [currentTab, setCurrentTab] = useState<string>(activeFilter);
   const [videoToDelete, setVideoToDelete] = useState<Video | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -43,22 +51,81 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     setCurrentTab(activeFilter);
   }, [activeFilter]);
 
-  const fetchData = async () => {
+  const fetchAdmins = async () => {
+    try {
+      setAdmins(await api.getAdmins());
+    } catch (err) {
+      console.error('Failed to load admins:', err);
+    }
+  };
+
+  const fetchFolders = async (force = false) => {
+    if (!user) return;
+    setIsFoldersLoading(true);
+    setFoldersError(null);
+    try {
+      const data = await cachedLoad(folderCacheKey(user.id, user.role), () => api.getProjectFolders(), force);
+      setFolders(data);
+      setActiveFolder((current) => current ? data.find((folder) => folder.projectId === current.projectId) ?? null : null);
+    } catch (err: any) {
+      console.error('Failed to load supervisor project folders:', err);
+      setFoldersError(err?.message || 'خطا در دریافت پوشه‌های پروژه.');
+    } finally {
+      setIsFoldersLoading(false);
+    }
+  };
+
+  const fetchVideos = async (folder: ProjectFolder, force = false) => {
+    if (!user) return;
     setIsLoading(true);
     try {
-      const [vData, adData] = await Promise.all([api.getVideos(), api.getAdmins()]);
-      setVideos(vData);
-      setAdmins(adData);
+      const key = videosCacheKey(user.id, user.role, folder.projectId);
+      const data = await cachedLoad(
+        key,
+        () => api.getVideos({ projectId: folder.projectId === null ? 'none' : folder.projectId }),
+        force
+      );
+      setVideos(data);
     } catch (err) {
-      console.error('Failed to load supervisor data:', err);
+      console.error('Failed to load supervisor videos:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    fetchAdmins();
+    fetchFolders();
+  }, [user?.id, user?.role]);
+
+  useEffect(() => {
+    if (activeFolder) fetchVideos(activeFolder);
+    else setVideos([]);
+  }, [activeFolder?.projectId]);
+
+  const openFolder = (folder: ProjectFolder) => {
+    setActiveFolder(folder);
+    setVideos([]);
+  };
+
+  const closeFolder = () => {
+    setActiveFolder(null);
+    setVideos([]);
+    setCurrentTab(activeFilter);
+  };
+
+  const refreshAll = () => {
+    invalidateProjectCache();
+    fetchAdmins();
+    fetchFolders(true);
+    if (activeFolder) fetchVideos(activeFolder, true);
+  };
+
+  const refreshAfterMutation = () => {
+    invalidateProjectCache();
+    fetchFolders(true);
+    if (activeFolder) fetchVideos(activeFolder, true);
+  };
 
   const handleAdminChange = async (videoId: number, newAdminId: number) => {
     try {
@@ -77,10 +144,21 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     return true;
   });
 
-  const pendingCount = videos.filter((v) => v.status === 'PendingReview').length;
-  const approvedCount = videos.filter((v) => v.status === 'Approved').length;
-  const rejectedCount = videos.filter((v) => v.status === 'Rejected').length;
-  const totalCount = videos.length;
+  const scopeCounts = activeFolder
+    ? activeFolder
+    : folders.reduce(
+        (acc, folder) => ({
+          videoCount: acc.videoCount + folder.videoCount,
+          pendingCount: acc.pendingCount + folder.pendingCount,
+          approvedCount: acc.approvedCount + folder.approvedCount,
+          rejectedCount: acc.rejectedCount + folder.rejectedCount,
+        }),
+        { videoCount: 0, pendingCount: 0, approvedCount: 0, rejectedCount: 0 }
+      );
+  const pendingCount = scopeCounts.pendingCount;
+  const approvedCount = scopeCounts.approvedCount;
+  const rejectedCount = scopeCounts.rejectedCount;
+  const totalCount = scopeCounts.videoCount;
 
   return (
     <div className="space-y-6" dir="rtl">
@@ -99,11 +177,11 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
         </div>
 
         <button
-          onClick={fetchData}
+          onClick={refreshAll}
           className="p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 text-xs flex items-center gap-1.5 transition-colors self-start sm:self-auto"
           title="بروزرسانی صف"
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-3.5 h-3.5 ${isLoading || isFoldersLoading ? 'animate-spin' : ''}`} />
           <span>بروزرسانی صف</span>
         </button>
       </div>
@@ -174,6 +252,20 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
           <div className="text-[10px] text-zinc-500 mt-0.5">همه مراحل کاری</div>
         </button>
       </div>
+
+      {!activeFolder ? (
+        <ProjectFolderGrid
+          folders={folders}
+          isLoading={isFoldersLoading}
+          error={foldersError}
+          onOpen={openFolder}
+          onRetry={() => fetchFolders(true)}
+          title="پوشه پروژه‌های محوله به من"
+          subtitle="ویدیوهای هر پروژه داخل پوشه همان پروژه قرار دارد؛ برای بررسی وارد پوشه شوید."
+        />
+      ) : (
+        <>
+      <ProjectFolderBar folder={activeFolder} onBack={closeFolder} loadedCount={isLoading ? undefined : videos.length} />
 
       {/* Tabs Navigation */}
       <div className="flex items-center gap-1.5 border-b border-zinc-800 pb-2 text-xs font-semibold">
@@ -295,6 +387,8 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
           ))}
         </div>
       )}
+        </>
+      )}
 
       {/* Review Modal */}
       {reviewModalState.video && (
@@ -306,6 +400,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
           onSuccess={(updated) => {
             setVideos((prev) => prev.map((v) => (v.id === updated.id ? updated : v)));
             setReviewModalState({ video: null, mode: 'approve' });
+            refreshAfterMutation();
           }}
         />
       )}
@@ -346,6 +441,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                     await api.deleteVideo(videoToDelete.id);
                     setVideos((prev) => prev.filter((v) => v.id !== videoToDelete.id));
                     setVideoToDelete(null);
+                    refreshAfterMutation();
                     toast.success('ویدیو با موفقیت حذف گردید.');
                   } catch (err: any) {
                     toast.error(err.message || 'خطا در حذف ویدیو.');

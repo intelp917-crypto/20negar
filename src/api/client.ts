@@ -1,4 +1,4 @@
-import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole, Project } from '../types/index.ts';
+import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole, Project, ProjectFolder } from '../types/index.ts';
 import { Upload as TusUpload } from 'tus-js-client';
 
 const TOKEN_KEY = 'cineflow_auth_token';
@@ -48,7 +48,9 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     } catch {
       // ignore
     }
-    throw new Error(errorMessage);
+    const error = new Error(errorMessage) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
 
   return response.json();
@@ -300,6 +302,7 @@ export const api = {
   getCameramen: () => request<User[]>('/api/cameramen'),
   getSupervisors: () => request<User[]>('/api/supervisors'),
   getProjects: () => request<Project[]>('/api/projects'),
+  getProjectFolders: () => request<ProjectFolder[]>('/api/projects/folders'),
   getAdmins: () => request<User[]>('/api/admins'),
   getAllUsers: () => request<User[]>('/api/users'),
 
@@ -335,12 +338,15 @@ export const api = {
     status?: string;
     editorId?: number;
     supervisorId?: number;
+    /** عدد = شناسه پروژه، 'none' = ویدیوهای بدون پروژه */
+    projectId?: number | 'none';
     search?: string;
     sort?: string;
     onlyApproved?: boolean;
   } = {}) => {
     const query = new URLSearchParams();
     if (params.status) query.set('status', params.status);
+    if (params.projectId !== undefined) query.set('projectId', String(params.projectId));
     if (params.editorId) query.set('editorId', String(params.editorId));
     if (params.supervisorId) query.set('supervisorId', String(params.supervisorId));
     if (params.search) query.set('search', params.search);

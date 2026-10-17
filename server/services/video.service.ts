@@ -67,9 +67,26 @@ export interface VideoFilters {
   status?: string;
   editorId?: number;
   supervisorId?: number;
+  /** عدد = یک پروژه مشخص، 'none' = ویدیوهای بدون پروژه */
+  projectId?: number | 'none';
   search?: string;
   sort?: 'newest' | 'oldest' | 'largest' | 'smallest';
   onlyApproved?: boolean;
+}
+
+export interface ProjectFolderDto {
+  projectId: number | null;
+  name: string;
+  description: string | null;
+  clientName: string | null;
+  projectCode: string | null;
+  status: 'active' | 'archived';
+  isConfidential: boolean;
+  videoCount: number;
+  approvedCount: number;
+  pendingCount: number;
+  rejectedCount: number;
+  lastVideoAt: string | null;
 }
 
 export class VideoService {
@@ -103,27 +120,12 @@ export class VideoService {
       LEFT JOIN projects p ON v.project_id = p.id
       WHERE 1=1
     `;
-    const params: any[] = [];
-
     // STRICT USER DATA ISOLATION (هر کسی فقط ویدیوهای خودش را می‌بیند)
-    if (user.role === 'Editor') {
-      // Editor sees their own videos plus raw footage uploaded by cameramen,
-      // so they can pick it up for editing.
-      sql += ` AND (v.editor_id = ? OR v.uploaded_by_id IS NOT NULL)`;
-      params.push(user.id);
-    } else if (user.role === 'Cameraman') {
-      // Cameraman sees only the footage they uploaded themselves.
-      sql += ` AND v.uploaded_by_id = ?`;
-      params.push(user.id);
-    } else if (user.role === 'Supervisor') {
-      // Supervisor ONLY sees videos assigned to them
-      sql += ` AND v.supervisor_id = ?`;
-      params.push(user.id);
-    } else if (user.role === 'Admin') {
-      // Admin ONLY sees approved videos that the SuperAdmin assigned to them
-      sql += ` AND v.status = 'Approved' AND v.admin_id = ?`;
-      params.push(user.id);
-    } else if (user.role === 'SuperAdmin') {
+    const scope = this.roleScope(user);
+    sql += scope.clause;
+    const params: any[] = [...scope.params];
+
+    if (user.role === 'SuperAdmin') {
       // SuperAdmin has global visibility and can filter by editor/supervisor if specified
       if (filters.editorId) {
         sql += ` AND v.editor_id = ?`;
@@ -136,6 +138,13 @@ export class VideoService {
       if (filters.onlyApproved) {
         sql += ` AND v.status = 'Approved'`;
       }
+    }
+
+    if (filters.projectId === 'none') {
+      sql += ` AND v.project_id IS NULL`;
+    } else if (typeof filters.projectId === 'number' && Number.isSafeInteger(filters.projectId) && filters.projectId > 0) {
+      sql += ` AND v.project_id = ?`;
+      params.push(filters.projectId);
     }
 
     if (filters.status && filters.status !== 'all') {
@@ -355,6 +364,74 @@ export class VideoService {
       id: params.editorId,
       role: uploadedByCameraman ? 'Cameraman' : 'Editor',
     })!;
+  }
+
+  /**
+   * همان محدوده دسترسی لیست ویدیوها، برای گروه‌بندی سبک پوشه‌های پروژه.
+   * هیچ ردیفی از ویدیوها به فرانت‌اند نمی‌رود؛ فقط شمارش تجمیعی.
+   */
+  private static roleScope(user: { id: number; role: UserRole }): { clause: string; params: any[] } {
+    switch (user.role) {
+      case 'Editor':
+        // Editor sees their own videos plus raw footage uploaded by cameramen.
+        return { clause: ' AND (v.editor_id = ? OR v.uploaded_by_id IS NOT NULL)', params: [user.id] };
+      case 'Cameraman':
+        return { clause: ' AND v.uploaded_by_id = ?', params: [user.id] };
+      case 'Supervisor':
+        return { clause: ' AND v.supervisor_id = ?', params: [user.id] };
+      case 'Admin':
+        return { clause: " AND v.status = 'Approved' AND v.admin_id = ?", params: [user.id] };
+      default:
+        return { clause: '', params: [] };
+    }
+  }
+
+  /**
+   * فهرست پوشه‌های پروژه برای پنل کاربر جاری.
+   * فقط پروژه‌هایی برمی‌گردند که کاربر حداقل یک ویدیوی قابل‌مشاهده در آن‌ها دارد،
+   * به‌همراه یک پوشه مجازی «بدون پروژه» برای ویدیوهای قدیمی.
+   */
+  public static getProjectFolders(
+    user: { id: number; role: UserRole },
+    database: { query: <T = any>(sql: string, params?: any[]) => T[] } = db
+  ): ProjectFolderDto[] {
+    const scope = this.roleScope(user);
+    const rows = database.query<any>(
+      `SELECT
+         v.project_id as projectId,
+         p.name as name, p.description as description, p.client_name as clientName,
+         p.project_code as projectCode, p.status as projectStatus,
+         p.is_confidential as isConfidential,
+         COUNT(*) as videoCount,
+         SUM(CASE WHEN v.status = 'Approved' THEN 1 ELSE 0 END) as approvedCount,
+         SUM(CASE WHEN v.status = 'PendingReview' THEN 1 ELSE 0 END) as pendingCount,
+         SUM(CASE WHEN v.status = 'Rejected' THEN 1 ELSE 0 END) as rejectedCount,
+         MAX(v.created_at) as lastVideoAt
+       FROM videos v
+       LEFT JOIN projects p ON v.project_id = p.id
+      WHERE 1=1${scope.clause}
+      GROUP BY v.project_id, p.name, p.description, p.client_name, p.project_code, p.status, p.is_confidential
+      ORDER BY lastVideoAt DESC, name COLLATE NOCASE ASC`,
+      scope.params
+    );
+
+    return rows.map((row) => {
+      const projectId = row.projectId == null ? null : Number(row.projectId);
+      return {
+        projectId,
+        name: projectId === null ? 'بدون پروژه' : String(row.name || 'پروژه بدون نام'),
+        description: projectId === null ? null : row.description ?? null,
+        clientName: projectId === null ? null : row.clientName ?? null,
+        projectCode: projectId === null ? null : row.projectCode ?? null,
+        status: projectId === null ? 'active' : (row.projectStatus === 'archived' ? 'archived' : 'active'),
+        isConfidential: projectId === null ? false : Boolean(row.isConfidential),
+        videoCount: Number(row.videoCount) || 0,
+        approvedCount: Number(row.approvedCount) || 0,
+        pendingCount: Number(row.pendingCount) || 0,
+        rejectedCount: Number(row.rejectedCount) || 0,
+        lastVideoAt: row.lastVideoAt ?? null,
+      };
+    });
   }
 
   private static withProject(video: any): VideoDto {

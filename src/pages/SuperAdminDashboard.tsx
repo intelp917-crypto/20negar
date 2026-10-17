@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { User, Video, SystemStats, UserRole } from '../types/index.ts';
+import { User, Video, SystemStats, UserRole, ProjectFolder } from '../types/index.ts';
 import { api } from '../api/client.ts';
+import { useAuth } from '../context/AuthContext.tsx';
 import { VideoCard } from '../components/VideoCard.tsx';
+import { ProjectFolderGrid, ProjectFolderBar } from '../components/ProjectFolders.tsx';
+import { cachedLoad, folderCacheKey, videosCacheKey, invalidateProjectCache } from '../api/projectCache.ts';
 import { StatusBadge, ProcessingBadge } from '../components/StatusBadge.tsx';
 import { DownloadMenu } from '../components/DownloadMenu.tsx';
 import { ReviewModal } from '../components/ReviewModal.tsx';
@@ -38,11 +41,16 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   onWatchVideo,
   onViewDetails,
 }) => {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<'users' | 'videos' | 'telemetry'>('users');
   const [users, setUsers] = useState<User[]>([]);
   const [videos, setVideos] = useState<Video[]>([]);
+  const [folders, setFolders] = useState<ProjectFolder[]>([]);
+  const [activeFolder, setActiveFolder] = useState<ProjectFolder | null>(null);
+  const [isFoldersLoading, setIsFoldersLoading] = useState(true);
+  const [foldersError, setFoldersError] = useState<string | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
 
   // User management modals
   const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
@@ -88,26 +96,85 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const [internalInstructions, setInternalInstructions] = useState('');
   const [internalSaving, setInternalSaving] = useState(false);
 
+  /** کاربران و آمار فنی؛ لیست ویدیوها فقط پس از ورود به یک پوشه واکشی می‌شود. */
   const fetchData = async () => {
-    setIsLoading(true);
     try {
-      const [uData, vData, sData] = await Promise.all([
+      const [uData, sData] = await Promise.all([
         api.getAllUsers(),
-        api.getVideos(),
         api.getSystemStats(),
       ]);
       setUsers(uData);
-      setVideos(vData);
       setStats(sData);
     } catch (err) {
       console.error('Failed to load superadmin data:', err);
+    }
+  };
+
+  const fetchFolders = async (force = false) => {
+    if (!user) return;
+    setIsFoldersLoading(true);
+    setFoldersError(null);
+    try {
+      const data = await cachedLoad(folderCacheKey(user.id, user.role), () => api.getProjectFolders(), force);
+      setFolders(data);
+      setActiveFolder((current) => current ? data.find((folder) => folder.projectId === current.projectId) ?? null : null);
+    } catch (err: any) {
+      console.error('Failed to load superadmin project folders:', err);
+      setFoldersError(err?.message || 'خطا در دریافت پوشه‌های پروژه.');
+    } finally {
+      setIsFoldersLoading(false);
+    }
+  };
+
+  const fetchVideos = async (folder: ProjectFolder, force = false) => {
+    if (!user) return;
+    setIsLoading(true);
+    try {
+      const key = videosCacheKey(user.id, user.role, folder.projectId);
+      const data = await cachedLoad(
+        key,
+        () => api.getVideos({ projectId: folder.projectId === null ? 'none' : folder.projectId }),
+        force
+      );
+      setVideos(data);
+    } catch (err) {
+      console.error('Failed to load superadmin videos:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
+    if (activeFolder) fetchVideos(activeFolder);
+    else setVideos([]);
+  }, [activeFolder?.projectId]);
+
+  const openFolder = (folder: ProjectFolder) => {
+    setActiveFolder(folder);
+    setVideos([]);
+  };
+
+  const closeFolder = () => {
+    setActiveFolder(null);
+    setVideos([]);
+  };
+
+  const refreshAll = () => {
+    invalidateProjectCache();
     fetchData();
+    fetchFolders(true);
+    if (activeFolder) fetchVideos(activeFolder, true);
+  };
+
+  const refreshAfterMutation = () => {
+    invalidateProjectCache();
+    fetchFolders(true);
+    if (activeFolder) fetchVideos(activeFolder, true);
+  };
+
+  useEffect(() => {
+    fetchData();
+    fetchFolders();
     api.getUpdateStatus().then(setUpdateStatus).catch((err) => console.error('Update status failed:', err));
     api.getInternalAccess().then((config) => {
       setInternalAccess(config);
@@ -234,6 +301,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     try {
       await api.deleteVideo(videoToDelete.id);
       setVideos((prev) => prev.filter((v) => v.id !== videoToDelete.id));
+      refreshAfterMutation();
       alert('ویدیو و تمام فایل‌های ترنسکد با موفقیت حذف شدند.');
     } catch (err: any) {
       alert(err.message || 'خطا در حذف ویدیو');
@@ -269,6 +337,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       u.role.toLowerCase().includes(s)
     );
   });
+
+  const totalFolderVideos = folders.reduce((sum, folder) => sum + folder.videoCount, 0);
 
   const filteredVideos = videos.filter((v) => {
     if (videoStatusFilter !== 'all' && v.status !== videoStatusFilter) return false;
@@ -333,10 +403,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
 
         <div className="flex items-center gap-3">
           <button
-            onClick={fetchData}
+            onClick={refreshAll}
             className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs flex items-center gap-1.5 transition-colors border border-zinc-700"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading || isFoldersLoading ? 'animate-spin' : ''}`} />
             <span>بروزرسانی داده‌ها</span>
           </button>
         </div>
@@ -365,7 +435,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           }`}
         >
           <Film className="w-4 h-4" />
-          <span>مرکز کنترل کل ویدیوها ({videos.length})</span>
+          <span>مرکز کنترل کل ویدیوها ({totalFolderVideos})</span>
         </button>
 
         <button
@@ -391,7 +461,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 type="text"
                 value={userSearch}
                 onChange={(e) => setUserSearch(e.target.value)}
-                placeholder="جستجو در نام کاربری، نام نمایشی یا نقش..."
                 className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl pr-10 pl-4 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
               />
             </div>
@@ -492,6 +561,20 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       {/* TAB 2: GLOBAL VIDEOS CONTROL */}
       {activeTab === 'videos' && (
         <div className="space-y-4">
+          {!activeFolder ? (
+            <ProjectFolderGrid
+              folders={folders}
+              isLoading={isFoldersLoading}
+              error={foldersError}
+              onOpen={openFolder}
+              onRetry={() => fetchFolders(true)}
+              title="پوشه پروژه‌ها"
+              subtitle="ویدیوهای هر مجموعه در پوشه همان پروژه نگهداری می‌شود؛ برای مشاهده وارد پوشه شوید."
+            />
+          ) : (
+            <>
+          <ProjectFolderBar folder={activeFolder} onBack={closeFolder} loadedCount={isLoading ? undefined : videos.length} />
+
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-zinc-900 border border-zinc-800 p-4 rounded-2xl">
             <div className="relative flex-1 w-full">
               <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
@@ -499,7 +582,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 type="text"
                 value={videoSearch}
                 onChange={(e) => setVideoSearch(e.target.value)}
-                placeholder="جستجو بر اساس عنوان ویدیو، نام فایل یا افراد مسئول..."
                 className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl pr-10 pl-4 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
               />
             </div>
@@ -583,6 +665,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
               </div>
             ))}
           </div>
+            </>
+          )}
         </div>
       )}
 
@@ -654,7 +738,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
               </span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <label className="space-y-1"><span className="text-zinc-500">آدرس HTTPS داخلی</span><input value={internalUrl} onChange={(e) => setInternalUrl(e.target.value)} placeholder="https://media.internal:3000" className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-700 text-zinc-100 outline-none focus:border-purple-500" /></label>
+              <label className="space-y-1"><span className="text-zinc-500">آدرس HTTPS داخلی</span><input value={internalUrl} onChange={(e) => setInternalUrl(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-700 text-zinc-100 outline-none focus:border-purple-500" /></label>
               <label className="space-y-1"><span className="text-zinc-500">دستور اتصال کاربران</span><input value={internalInstructions} onChange={(e) => setInternalInstructions(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-700 text-zinc-100 outline-none focus:border-purple-500" /></label>
             </div>
             <label className="flex items-center gap-2"><input type="checkbox" checked={internalEnabled} onChange={(e) => setInternalEnabled(e.target.checked)} /> فعال‌سازی دکمه برنامه داخلی برای کاربران مجاز</label>
@@ -730,7 +814,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   required
                   value={newUsername}
                   onChange={(e) => setNewUsername(e.target.value)}
-                  placeholder="مثلا: editor2 یا supervisor2"
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-purple-500"
                 />
               </div>
@@ -742,7 +825,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   required
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="حداقل ۴ کاراکتر"
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-purple-500"
                 />
               </div>
@@ -754,7 +836,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   required
                   value={newDisplayName}
                   onChange={(e) => setNewDisplayName(e.target.value)}
-                  placeholder="مثلا: علی رضایی (تدوین‌گر استودیو)"
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-purple-500"
                 />
               </div>
@@ -813,7 +894,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   required
                   value={resetPasswordVal}
                   onChange={(e) => setResetPasswordVal(e.target.value)}
-                  placeholder="رمز عبور جدید را وارد کنید"
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-purple-500"
                 />
               </div>
@@ -916,6 +996,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           onSuccess={(updated) => {
             setVideos((prev) => prev.map((v) => (v.id === updated.id ? updated : v)));
             setReviewState({ video: null, mode: 'approve' });
+            refreshAfterMutation();
           }}
         />
       )}

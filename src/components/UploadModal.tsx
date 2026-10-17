@@ -269,11 +269,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                <div className="space-y-3 p-3.5 rounded-xl bg-zinc-950/60 border border-zinc-800">
                  <div>
                    <label className="block font-semibold text-zinc-300 mb-1.5">نام پروژه جدید <span className="text-purple-400">*</span></label>
-                   <input type="text" required disabled={uploadProgress !== null} value={newProjectName} onChange={(e) => { setNewProjectName(e.target.value); setError(null); }} placeholder="مثال: کمپین تابستانی" className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50" />
+                   <input type="text" required disabled={uploadProgress !== null} value={newProjectName} onChange={(e) => { setNewProjectName(e.target.value); setError(null); }} className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50" />
                  </div>
                  <div>
                    <label className="block font-semibold text-zinc-300 mb-1.5">جزئیات پروژه</label>
-                   <textarea rows={2} disabled={uploadProgress !== null} value={newProjectDescription} onChange={(e) => { setNewProjectDescription(e.target.value); setError(null); }} placeholder="توضیحات اختیاری پروژه" className="w-full resize-none bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50" />
+                   <textarea rows={2} disabled={uploadProgress !== null} value={newProjectDescription} onChange={(e) => { setNewProjectDescription(e.target.value); setError(null); }} className="w-full resize-none bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50" />
                  </div>
                </div>
              )}
@@ -288,7 +288,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 disabled={uploadProgress !== null}
                 value={title}
                  onChange={(e) => { setTitle(e.target.value); setError(null); }}
-                placeholder="مثال: تیزر تبلیغاتی شرکت - کات نهایی"
                 className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
               />
             </div>

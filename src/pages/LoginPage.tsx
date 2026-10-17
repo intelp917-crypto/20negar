@@ -21,7 +21,12 @@ export const LoginPage: React.FC = () => {
     try {
       await login(username.trim(), password.trim());
     } catch (err: any) {
-      setError(err.message || 'نام کاربری یا رمز عبور اشتباه است.');
+      const isCredentialError = err?.status === 401;
+      setError(
+        isCredentialError
+          ? 'اطلاعات ورود اشتباه است. نام کاربری یا رمز عبور را بررسی کنید.'
+          : err?.message || 'ورود به سامانه ناموفق بود. لطفاً دوباره تلاش کنید.'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -62,7 +67,6 @@ export const LoginPage: React.FC = () => {
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="نام کاربری خود را وارد کنید"
                   className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl pr-10 pl-4 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all font-mono"
                   dir="ltr"
                 />
@@ -82,7 +86,6 @@ export const LoginPage: React.FC = () => {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
                   className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl pr-10 pl-4 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all font-mono"
                   dir="ltr"
                 />
