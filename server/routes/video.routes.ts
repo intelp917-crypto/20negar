@@ -49,17 +49,28 @@ router.get('/stats', authenticate, (req: Request, res: Response): void => {
 // GET /api/videos - Query videos with filters and strict role isolation
 router.get('/', authenticate, (req: Request, res: Response): void => {
   try {
-    const { status, editorId, supervisorId, search, sort, onlyApproved } = req.query;
+    const { status, editorId, supervisorId, search, sort, onlyApproved, projectId: projectIdRaw } = req.query;
+
+    // projectId=عدد → همان پروژه؛ projectId=none → پوشه «بدون پروژه»
+    let projectId: number | 'none' | undefined;
+    if (projectIdRaw === 'none') {
+      projectId = 'none';
+    } else if (typeof projectIdRaw === 'string' && projectIdRaw.trim() !== '') {
+      const parsed = Number(projectIdRaw);
+      if (Number.isSafeInteger(parsed) && parsed > 0) projectId = parsed;
+    }
 
     const videos = VideoService.getVideos(req.user!, {
       status: status as string,
       editorId: editorId ? parseInt(editorId as string, 10) : undefined,
       supervisorId: supervisorId ? parseInt(supervisorId as string, 10) : undefined,
+      projectId,
       search: search as string,
       sort: sort as any,
       onlyApproved: onlyApproved === 'true',
     });
 
+    res.setHeader('Cache-Control', 'no-store');
     res.json(videos);
   } catch (err: any) {
     console.error('[VideoRoutes] Fetch error:', err);

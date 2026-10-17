@@ -27,6 +27,22 @@ export interface NewProjectInput {
   description?: string;
 }
 
+/** یک پوشه پروژه در نمای پنل‌ها؛ projectId=null یعنی پوشه «بدون پروژه» */
+export interface ProjectFolder {
+  projectId: number | null;
+  name: string;
+  description: string | null;
+  clientName: string | null;
+  projectCode: string | null;
+  status: 'active' | 'archived';
+  isConfidential: boolean;
+  videoCount: number;
+  approvedCount: number;
+  pendingCount: number;
+  rejectedCount: number;
+  lastVideoAt: string | null;
+}
+
 export type VideoStatus = 'Uploaded' | 'PendingReview' | 'Approved' | 'Rejected';
 export type ProcessingStatus = 'Uploading' | 'Processing' | 'Ready' | 'ProcessingFailed';
 export type QualityName = 'Original' | '1080p' | '720p' | '480p' | '360p';
@@ -98,6 +114,8 @@ export interface Video {
   qualities?: VideoQuality[];
   reviews?: VideoReview[];
   processingDetails?: ProcessingDetails;
+  projectId: number | null;
+  project: Project | null;
 }
 
 export interface AuditLog {

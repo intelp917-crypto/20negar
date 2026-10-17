@@ -12,7 +12,6 @@ import {
   FileText,
   LogOut,
   FolderGit2,
-  BookOpen,
   Crown,
   Settings,
   Activity,
@@ -54,7 +53,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       { id: 'editors', label: 'لیست تدوین‌گران', icon: <Users className="w-4 h-4" /> },
       { id: 'supervisors', label: 'لیست ناظران کیفی', icon: <Shield className="w-4 h-4" /> },
       { id: 'audit-logs', label: 'لاگ‌های امنیتی سیستم', icon: <FileText className="w-4 h-4" /> },
-      { id: 'docs', label: 'راهنمای استودیو ۲۰نگار', icon: <BookOpen className="w-4 h-4" /> },
     ];
   } else if (role === 'Admin') {
     navItems = [
@@ -64,7 +62,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       { id: 'editors', label: 'تدوین‌گران', icon: <Users className="w-4 h-4" /> },
       { id: 'supervisors', label: 'ناظران کیفی', icon: <Shield className="w-4 h-4" /> },
       { id: 'audit-logs', label: 'لاگ‌های امنیتی', icon: <FileText className="w-4 h-4" /> },
-      { id: 'docs', label: 'مستندات و استقرار', icon: <BookOpen className="w-4 h-4" /> },
     ];
   } else if (role === 'Editor') {
     navItems = [
@@ -79,7 +76,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       { id: 'pending-review', label: 'در انتظار بازبینی', icon: <Clock className="w-4 h-4" /> },
       { id: 'approved', label: 'تایید شده‌ها', icon: <CheckCircle2 className="w-4 h-4" /> },
       { id: 'rejected', label: 'رد شده / نیازمند اصلاح', icon: <XCircle className="w-4 h-4" /> },
-      { id: 'docs', label: 'راهنمای استودیو', icon: <BookOpen className="w-4 h-4" /> },
     ];
   } else if (role === 'Cameraman') {
     navItems = [
@@ -91,7 +87,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         icon: <UploadCloud className="w-4 h-4" />,
         action: onOpenUpload,
       },
-      { id: 'docs', label: 'راهنمای استودیو', icon: <BookOpen className="w-4 h-4" /> },
     ];
   } else if (role === 'Supervisor') {
     navItems = [
@@ -100,7 +95,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       { id: 'approved', label: 'پروژه‌های تایید شده', icon: <CheckCircle2 className="w-4 h-4" /> },
       { id: 'rejected', label: 'پروژه‌های رد شده', icon: <XCircle className="w-4 h-4" /> },
       { id: 'all-assigned', label: 'تمام پروژه‌های محوله', icon: <FolderGit2 className="w-4 h-4" /> },
-      { id: 'docs', label: 'راهنمای استودیو', icon: <BookOpen className="w-4 h-4" /> },
     ];
   }
 

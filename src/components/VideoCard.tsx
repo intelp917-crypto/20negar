@@ -52,6 +52,8 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           <img
             src={thumbnailUrl}
             alt={video.title}
+            loading="lazy"
+            decoding="async"
             onError={() => setThumbError(true)}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
           />

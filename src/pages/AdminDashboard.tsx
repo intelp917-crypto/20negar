@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Video, AdminStats, User } from '../types/index.ts';
+import { Video, AdminStats, User, ProjectFolder } from '../types/index.ts';
 import { api } from '../api/client.ts';
+import { useAuth } from '../context/AuthContext.tsx';
 import { VideoCard } from '../components/VideoCard.tsx';
+import { ProjectFolderGrid, ProjectFolderBar } from '../components/ProjectFolders.tsx';
+import { cachedLoad, folderCacheKey, videosCacheKey, invalidateProjectCache } from '../api/projectCache.ts';
 import { DownloadMenu } from '../components/DownloadMenu.tsx';
 import { StatusBadge, ProcessingBadge } from '../components/StatusBadge.tsx';
 import {
@@ -31,11 +34,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onViewDetails,
   defaultView = 'approved-only',
 }) => {
+  const { user } = useAuth();
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
   const [editors, setEditors] = useState<User[]>([]);
   const [supervisors, setSupervisors] = useState<User[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [folders, setFolders] = useState<ProjectFolder[]>([]);
+  const [activeFolder, setActiveFolder] = useState<ProjectFolder | null>(null);
+  const [isFoldersLoading, setIsFoldersLoading] = useState(true);
+  const [foldersError, setFoldersError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>(
@@ -46,39 +54,94 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [sortBy, setSortBy] = useState<string>('newest');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
 
-  const fetchData = async () => {
-    setIsLoading(true);
+  /** داده‌های پایه پنل؛ هیچ ویدیویی در این مرحله واکشی نمی‌شود. */
+  const fetchMeta = async () => {
     try {
-      const [statsData, videosData, editorsData, supervisorsData] = await Promise.all([
+      const [statsData, editorsData, supervisorsData] = await Promise.all([
         api.getAdminStats(),
-        api.getVideos({
-          search: search || undefined,
-          status: statusFilter !== 'all' ? statusFilter : undefined,
-          editorId: editorFilter !== 'all' ? Number(editorFilter) : undefined,
-          supervisorId: supervisorFilter !== 'all' ? Number(supervisorFilter) : undefined,
-          sort: sortBy,
-        }),
         api.getEditors(),
         api.getSupervisors(),
       ]);
       setStats(statsData);
-      setVideos(videosData);
       setEditors(editorsData);
       setSupervisors(supervisorsData);
     } catch (err) {
-      console.error('Failed to load admin data:', err);
+      console.error('Failed to load admin meta:', err);
+    }
+  };
+
+  const fetchFolders = async (force = false) => {
+    if (!user) return;
+    setIsFoldersLoading(true);
+    setFoldersError(null);
+    try {
+      const data = await cachedLoad(folderCacheKey(user.id, user.role), () => api.getProjectFolders(), force);
+      setFolders(data);
+      setActiveFolder((current) => current ? data.find((folder) => folder.projectId === current.projectId) ?? null : null);
+    } catch (err: any) {
+      console.error('Failed to load admin project folders:', err);
+      setFoldersError(err?.message || 'خطا در دریافت پوشه‌های پروژه.');
+    } finally {
+      setIsFoldersLoading(false);
+    }
+  };
+
+  const fetchVideos = async (folder: ProjectFolder, force = false) => {
+    if (!user) return;
+    setIsLoading(true);
+    try {
+      const signature = [statusFilter, editorFilter, supervisorFilter, sortBy, search.trim()].join('|');
+      const key = videosCacheKey(user.id, user.role, folder.projectId, signature);
+      const data = await cachedLoad(
+        key,
+        () => api.getVideos({
+          search: search.trim() || undefined,
+          status: statusFilter !== 'all' ? statusFilter : undefined,
+          editorId: editorFilter !== 'all' ? Number(editorFilter) : undefined,
+          supervisorId: supervisorFilter !== 'all' ? Number(supervisorFilter) : undefined,
+          projectId: folder.projectId === null ? 'none' : folder.projectId,
+          sort: sortBy,
+        }),
+        force
+      );
+      setVideos(data);
+    } catch (err) {
+      console.error('Failed to load admin videos:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
-  }, [statusFilter, editorFilter, supervisorFilter, sortBy]);
+    fetchMeta();
+    fetchFolders();
+  }, [user?.id, user?.role]);
+
+  useEffect(() => {
+    if (activeFolder) fetchVideos(activeFolder);
+    else setVideos([]);
+  }, [activeFolder?.projectId, statusFilter, editorFilter, supervisorFilter, sortBy]);
+
+  const openFolder = (folder: ProjectFolder) => {
+    setActiveFolder(folder);
+    setVideos([]);
+  };
+
+  const closeFolder = () => {
+    setActiveFolder(null);
+    setVideos([]);
+  };
+
+  const refreshAll = () => {
+    invalidateProjectCache();
+    fetchMeta();
+    fetchFolders(true);
+    if (activeFolder) fetchVideos(activeFolder, true);
+  };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchData();
+    if (activeFolder) fetchVideos(activeFolder, true);
   };
 
   const formatFileSize = (bytes: number) => {
@@ -115,11 +178,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <div className="flex items-center gap-2">
           <button
-            onClick={fetchData}
+            onClick={refreshAll}
             className="p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 text-xs flex items-center gap-1.5 transition-colors"
             title="بروزرسانی داده‌ها"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading || isFoldersLoading ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">بروزرسانی</span>
           </button>
         </div>
@@ -182,6 +245,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       </div>
 
+      {!activeFolder ? (
+        <ProjectFolderGrid
+          folders={folders}
+          isLoading={isFoldersLoading}
+          error={foldersError}
+          onOpen={openFolder}
+          onRetry={() => fetchFolders(true)}
+          title="پوشه پروژه‌های ادمین"
+          subtitle="هر پروژه یک پوشه جداگانه دارد؛ برای دیدن ویدیوها وارد پوشه شوید."
+        />
+      ) : (
+        <>
+      <ProjectFolderBar folder={activeFolder} onBack={closeFolder} loadedCount={isLoading ? undefined : videos.length} />
+
       {/* Primary Rule Notice */}
       {statusFilter === 'Approved' && (
         <div className="p-4 rounded-2xl bg-emerald-950/20 border border-emerald-500/25 text-xs text-emerald-300 flex items-center justify-between">
@@ -209,7 +286,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="جستجو در عنوان، نام فایل اصلی، نام تدوین‌گر یا ناظر کیفی..."
               className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl pr-10 pl-4 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all"
             />
           </div>
@@ -394,6 +470,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </table>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

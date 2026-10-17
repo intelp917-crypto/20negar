@@ -11,10 +11,10 @@ import { SupervisorDashboard } from './pages/SupervisorDashboard.tsx';
 import { VideoDetailsPage } from './pages/VideoDetailsPage.tsx';
 import { AuditLogsPage } from './pages/AuditLogsPage.tsx';
 import { UsersPage } from './pages/UsersPage.tsx';
-import { DocumentationPage } from './pages/DocumentationPage.tsx';
 import { UploadModal } from './components/UploadModal.tsx';
 import { Video } from './types/index.ts';
 import { InstallPrompt } from './components/InstallPrompt.tsx';
+import { invalidateProjectCache } from './api/projectCache.ts';
 
 const MainLayout: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -117,10 +117,6 @@ const MainLayout: React.FC = () => {
           onBack={handleBackFromDetails}
         />
       );
-    }
-
-    if (activeTab === 'docs') {
-      return <DocumentationPage />;
     }
 
     if (activeTab === 'audit-logs' && (user.role === 'Admin' || user.role === 'SuperAdmin')) {
@@ -265,6 +261,7 @@ const MainLayout: React.FC = () => {
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
         onSuccess={(newVideo) => {
+          invalidateProjectCache();
           setSelectedVideoId(newVideo.id);
         }}
       />

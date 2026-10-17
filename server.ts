@@ -186,6 +186,21 @@ async function startServer() {
     console.log(`URL: http://localhost:${PORT}`);
     console.log(`=======================================================`);
 
+        const lanAddresses = Object.values(os.networkInterfaces())
+      .flat()
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry) && entry!.family === 'IPv4' && !entry!.internal)
+      .map((entry) => entry.address);
+    if (lanAddresses.length > 0) {
+      console.log('[Network] LAN addresses available for router port forwarding:');
+      for (const address of lanAddresses) console.log(`  http://${address}:${PORT}`);
+      console.log(
+        '[Network] For internet access: forward this port in your router, set VPN to Bypass LAN mode, and test from outside.'
+      );
+    }
+    if (PORT < 1024) {
+      console.warn(`[Network] Port ${PORT} is a privileged port and requires Administrator access on Windows.`);
+    }
+
     // Standard ports 80/443: VPNs usually only pass traffic on these ports,
     // so the site stays reachable while a VPN is active.
     if (ENABLE_STANDARD_PORTS) {

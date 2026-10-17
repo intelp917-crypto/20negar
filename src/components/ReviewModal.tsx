@@ -146,11 +146,6 @@ export const ReviewModal: React.FC<ReviewModalProps> = ({
               required={mode === 'reject'}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
-              placeholder={
-                mode === 'approve'
-                  ? 'مثال: رنگ، نور و تطابق صدا بررسی شد. کیفیت کار بی‌نقص است.'
-                  : 'مثال: صدای دیالوگ در صحنه ۳ دچار نویز است و سکانس آخر باید کوتاه‌تر شود.'
-              }
               className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl p-3 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all resize-none leading-relaxed"
             />
           </div>

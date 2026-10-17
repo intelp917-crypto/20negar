@@ -5,13 +5,16 @@ import dotenv from 'dotenv';
 // `quiet` keeps dotenv from printing banner/tips on every server start.
 dotenv.config({ quiet: true });
 
-export const PORT = parseInt(process.env.PORT || '3000', 10);
+function resolvePort(raw: string | undefined, fallback: number): number {
+  const parsed = parseInt(raw || '', 10);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : fallback;
+}
 
-// پورت‌های استاندارد: VPN ها معمولاً فقط ترافیک پورت‌های 80 و 443 را عبور می‌دهند.
-// با فعال بودن، سرور همزمان روی این پورت‌ها هم listen می‌کند تا با VPN روشن هم قابل دسترسی باشد.
+export const PORT = resolvePort(process.env.PORT, 3000);
+
 export const ENABLE_STANDARD_PORTS = (process.env.ENABLE_STANDARD_PORTS || 'true').toLowerCase() !== 'false';
-export const HTTP_PORT = parseInt(process.env.HTTP_PORT || '80', 10);
-export const SECURE_PORT = parseInt(process.env.SECURE_PORT || '443', 10);
+export const HTTP_PORT = resolvePort(process.env.HTTP_PORT, 80);
+export const SECURE_PORT = resolvePort(process.env.SECURE_PORT, 443);
 /** Public URL used when a browser reaches the server through a forwarded IP/domain. */
 export const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/$/, '');
 export const CORS_ORIGINS = (process.env.CORS_ORIGINS || PUBLIC_URL)

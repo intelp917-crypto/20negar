@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types/index.ts';
 import { api, getStoredToken, setStoredToken } from '../api/client.ts';
+import { invalidateProjectCache } from '../api/projectCache.ts';
 
 interface AuthContextType {
   user: User | null;
@@ -47,15 +48,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = async (username: string, password: string) => {
-    setIsLoading(true);
-    try {
-      const res = await api.login({ username, password });
-      setStoredToken(res.token);
-      setToken(res.token);
-      setUser(res.user);
-    } finally {
-      setIsLoading(false);
-    }
+    // isLoading فقط برای بررسی اولیه نشست است؛ اگر هنگام ورود هم true شود،
+    // صفحه لاگین جای خود را به اسپینر می‌دهد و پیام خطای ورود از بین می‌رود.
+    const res = await api.login({ username, password });
+    invalidateProjectCache();
+    setStoredToken(res.token);
+    setToken(res.token);
+    setUser(res.user);
   };
 
   const logout = async () => {
@@ -64,6 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // ignore
     } finally {
+      invalidateProjectCache();
       setStoredToken(null);
       setToken(null);
       setUser(null);
