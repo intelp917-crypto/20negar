@@ -28,13 +28,15 @@ if (process.env.NODE_ENV === 'production' && configuredJwtSecret.length < 32) {
 export const JWT_SECRET = configuredJwtSecret || '20negar-development-only-secret-change-me';
 export const JWT_EXPIRES_IN = '7d';
 
-export const DATA_DIR = path.resolve(process.cwd(), 'data');
-export const STORAGE_DIR = path.resolve(DATA_DIR, 'storage');
-export const PRIVATE_VIDEOS_DIR = path.resolve(STORAGE_DIR, 'videos');
-export const PRIVATE_THUMBNAILS_DIR = path.resolve(STORAGE_DIR, 'thumbnails');
-export const PRIVATE_HLS_DIR = path.resolve(STORAGE_DIR, 'hls');
-export const DB_FILE_PATH = path.resolve(DATA_DIR, 'cineflow.sqlite');
-export const SSL_DIR = path.resolve(DATA_DIR, 'certs');
+const configuredDataDir = (process.env.NEGAR_DATA_DIR || '').trim();
+export const DATA_DIR = path.resolve(configuredDataDir || path.resolve(process.cwd(), 'data'));
+const configuredStorageDir = (process.env.NEGAR_STORAGE_DIR || '').trim();
+export const STORAGE_DIR = path.resolve(configuredStorageDir || path.join(DATA_DIR, 'storage'));
+export const PRIVATE_VIDEOS_DIR = path.resolve(process.env.NEGAR_VIDEOS_DIR || path.join(STORAGE_DIR, 'videos'));
+export const PRIVATE_THUMBNAILS_DIR = path.resolve(process.env.NEGAR_THUMBNAILS_DIR || path.join(STORAGE_DIR, 'thumbnails'));
+export const PRIVATE_HLS_DIR = path.resolve(process.env.NEGAR_HLS_DIR || path.join(STORAGE_DIR, 'hls'));
+export const DB_FILE_PATH = path.resolve(process.env.NEGAR_DB_FILE_PATH || path.join(DATA_DIR, 'cineflow.sqlite'));
+export const SSL_DIR = path.resolve(process.env.NEGAR_SSL_DIR || path.join(DATA_DIR, 'certs'));
 
 // Ensure base directories exist
 for (const dir of [DATA_DIR, STORAGE_DIR, PRIVATE_VIDEOS_DIR, PRIVATE_THUMBNAILS_DIR, PRIVATE_HLS_DIR, SSL_DIR]) {
