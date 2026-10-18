@@ -101,7 +101,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
             </h4>
           </div>
 
-          <div className="text-xs text-zinc-500 font-mono truncate mb-3" title={video.originalFilename} dir="ltr">
+          <div className="min-w-0 text-xs text-zinc-500 font-mono truncate mb-3" title={video.originalFilename} dir="ltr">
             {video.originalFilename}
           </div>
 

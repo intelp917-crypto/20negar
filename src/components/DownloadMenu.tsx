@@ -15,7 +15,7 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
   size = 'md',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [downloadingQuality, setDownloadingQuality] = useState<string | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const formatFileSize = (bytes: number) => {
     if (!bytes || bytes === 0) return 'محاسبه نشده';
@@ -26,19 +26,9 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
     return `${mb.toFixed(1)} مگابایت`;
   };
 
-  const availableQualities = [
-    { quality: 'Original', fileSize: video.fileSize, label: 'نسخه اصلی منبع (Master Cut)', resolution: video.originalResolution || 'کیفیت اصلی' },
-    ...(video.qualities || []).filter((q) => q.quality !== 'Original').map((q) => ({
-      quality: q.quality,
-      fileSize: q.fileSize,
-      label: `کیفیت ${q.quality}`,
-      resolution: `${q.width}×${q.height}`,
-    })),
-  ];
-
-  const handleDownload = (quality: string) => {
-    setDownloadingQuality(quality);
-    const url = api.getDownloadUrl(video.id, quality);
+  const handleDownload = () => {
+    setIsDownloading(true);
+    const url = api.getDownloadUrl(video.id);
     const link = document.createElement('a');
     link.href = url;
     link.setAttribute('download', '');
@@ -47,7 +37,7 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
     document.body.removeChild(link);
 
     setTimeout(() => {
-      setDownloadingQuality(null);
+      setIsDownloading(false);
       setIsOpen(false);
     }, 1000);
   };
@@ -65,7 +55,7 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
       <button
         onClick={() => setIsOpen(true)}
         className={`inline-flex items-center gap-1.5 rounded-xl transition-colors ${btnClasses} ${sizeClasses}`}
-        title="دانلود کیفیت‌های ویدیو"
+         title="دانلود فایل اصلی ویدیو"
         type="button"
       >
         <Download className={size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
@@ -106,42 +96,36 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
               </button>
             </div>
 
-            {/* Quality List */}
-            <div className="space-y-2">
-              <div className="text-[11px] font-semibold text-zinc-400">
-                کیفیت مورد نظر خود را انتخاب کنید:
-              </div>
-
-              {availableQualities.map((item) => (
-                <button
-                  key={item.quality}
-                  onClick={() => handleDownload(item.quality)}
-                  disabled={downloadingQuality === item.quality}
-                  className="w-full flex items-center justify-between p-3.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800/90 border border-zinc-800 hover:border-purple-500/50 transition-all text-right group"
-                >
+             {/* Original file only: no server-side quality generation. */}
+             <div className="space-y-2">
+               <div className="text-[11px] font-semibold text-zinc-400">فایل اصلی بدون تبدیل سمت سرور:</div>
+               <button
+                 onClick={handleDownload}
+                 disabled={isDownloading}
+                 className="w-full flex items-center justify-between p-3.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800/90 border border-zinc-800 hover:border-purple-500/50 transition-all text-right group"
+               >
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-lg bg-zinc-900 group-hover:bg-purple-600/20 group-hover:text-purple-400 text-zinc-400 flex items-center justify-center transition-colors">
-                      {downloadingQuality === item.quality ? (
+                       {isDownloading ? (
                         <CheckCircle2 className="w-4 h-4 text-emerald-400 animate-pulse" />
                       ) : (
                         <Download className="w-4 h-4" />
                       )}
                     </div>
                     <div>
-                      <div className="text-xs font-bold text-zinc-200 group-hover:text-white">
-                        {item.label}
-                      </div>
-                      <div className="text-[10px] text-zinc-400 font-mono mt-0.5">
-                        {item.resolution}
-                      </div>
+                         <div className="text-xs font-bold text-zinc-200 group-hover:text-white">
+                         نسخه اصلی منبع
+                       </div>
+                       <div className="text-[10px] text-zinc-400 font-mono mt-0.5">
+                         {video.originalResolution || 'کیفیت اصلی'}
+                       </div>
                     </div>
                   </div>
 
                   <div className="text-left font-mono text-xs font-semibold text-purple-400">
-                    {formatFileSize(item.fileSize)}
+                     {formatFileSize(video.fileSize)}
                   </div>
                 </button>
-              ))}
             </div>
 
             {/* Close Button */}

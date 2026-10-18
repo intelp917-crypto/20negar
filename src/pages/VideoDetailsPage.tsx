@@ -190,7 +190,6 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
             <VideoPlayer
               videoId={video.id}
               title={video.title}
-              qualities={video.qualities}
               posterUrl={video.thumbnailPath ? api.getThumbnailUrl(video.id) : undefined}
               autoPlay={true}
             />
@@ -293,7 +292,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
             <div className="flex items-start justify-between gap-2 pb-3 border-b border-zinc-800">
               <div>
                 <h3 className="text-base font-bold text-white tracking-tight">{video.title}</h3>
-                <div className="text-xs text-zinc-500 font-mono mt-0.5" dir="ltr">{video.originalFilename}</div>
+                <div className="text-xs text-zinc-500 font-mono mt-0.5 break-all" dir="ltr">{video.originalFilename}</div>
               </div>
               <StatusBadge status={video.status} />
             </div>
@@ -447,11 +446,11 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
             {/* Available Downloads */}
             <div className="pt-3 border-t border-zinc-800">
               <h4 className="text-xs font-bold uppercase text-zinc-400 tracking-wider mb-2.5">
-                دانلود کیفیت‌های تولید شده
+                دانلود فایل اصلی
               </h4>
               <div className="space-y-1.5">
                 <a
-                  href={api.getDownloadUrl(video.id, 'Original')}
+                   href={api.getDownloadUrl(video.id)}
                   download
                   className="w-full flex items-center justify-between p-2.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 text-xs text-zinc-300 transition-colors border border-zinc-800/80"
                 >
@@ -459,17 +458,6 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                   <span className="text-[10px] font-mono text-zinc-500">{formatFileSize(video.fileSize)}</span>
                 </a>
 
-                {video.qualities?.filter((q) => q.quality !== 'Original').map((q) => (
-                  <a
-                    key={q.id}
-                    href={api.getDownloadUrl(video.id, q.quality)}
-                    download
-                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 text-xs text-zinc-300 transition-colors border border-zinc-800/80"
-                  >
-                    <span className="font-semibold">کیفیت {q.quality} ({q.width}×{q.height})</span>
-                    <span className="text-[10px] font-mono text-purple-400">{formatFileSize(q.fileSize)}</span>
-                  </a>
-                ))}
               </div>
             </div>
           </div>
@@ -508,7 +496,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
               </div>
               <div>
                 <h3 className="text-base font-bold text-white">حذف کامل ویدیو از سامانه</h3>
-                <p className="text-xs text-zinc-400 font-mono" dir="ltr">{video.originalFilename}</p>
+                <p className="text-xs text-zinc-400 font-mono break-all" dir="ltr">{video.originalFilename}</p>
               </div>
             </div>
 

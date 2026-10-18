@@ -413,9 +413,9 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
               <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
                 <Trash2 className="w-5 h-5" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <h3 className="text-base font-bold text-white">حذف ویدیو</h3>
-                <p className="text-xs text-zinc-400 font-mono" dir="ltr">{videoToDelete.originalFilename}</p>
+                <p className="text-xs text-zinc-400 font-mono break-all" dir="ltr">{videoToDelete.originalFilename}</p>
               </div>
             </div>
 

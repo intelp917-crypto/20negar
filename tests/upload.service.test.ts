@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decideUploadFinish, isUploadSessionOwner, validateCreateUploadSessionInput } from '../server/services/upload.service.ts';
+import { decideUploadFinish, isUploadSessionOwner, normalizeUploadFilename, validateCreateUploadSessionInput } from '../server/services/upload.service.ts';
 
 // The production db wrapper is a process singleton backed by the configured file.
 // These tests intentionally cover the pure validation boundary without touching it.
@@ -25,6 +25,14 @@ test('upload session validation rejects missing metadata and invalid expiry', ()
   assert.throws(() => validateCreateUploadSessionInput({ ...valid, filename: ' ' }), /filename/);
   assert.throws(() => validateCreateUploadSessionInput({ ...valid, mime: '' }), /mime/);
   assert.throws(() => validateCreateUploadSessionInput({ ...valid, expiresAt: 'later' }), /expiresAt/);
+});
+
+test('upload filename normalization removes paths and bounds long metadata without losing extension', () => {
+  const normalized = normalizeUploadFilename(`C:\\uploads\\${'x'.repeat(400)}.mp4`);
+  assert.equal(normalized.length, 255);
+  assert.match(normalized, /\.mp4$/);
+  assert.equal(normalizeUploadFilename('  folder/video.mp4  '), 'video.mp4');
+  assert.equal(normalizeUploadFilename('\u0000  '), '');
 });
 
 test('upload session ownership is scoped to the authenticated owner', () => {

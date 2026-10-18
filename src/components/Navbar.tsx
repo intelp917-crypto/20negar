@@ -142,7 +142,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
   };
 
   return (
-    <header className="h-16 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 sticky top-0 z-40 px-4 lg:px-6 flex items-center justify-between" dir="rtl">
+    <header className="h-16 min-h-16 bg-zinc-950/95 backdrop-blur-md border-b border-zinc-800 sticky top-0 z-50 px-3 sm:px-4 lg:px-6 flex items-center justify-between" dir="rtl">
       <div className="flex items-center gap-3">
         {internalUrl && (
           <button onClick={openInternalApp} className={`hidden sm:flex items-center gap-1.5 px-2.5 py-2 rounded-xl border text-xs font-semibold transition-colors ${internalState === 'available' ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10' : internalState === 'unavailable' ? 'border-rose-500/40 text-rose-300 bg-rose-500/10' : 'border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-900'}`} title="بررسی و ورود به برنامه داخلی">
@@ -152,7 +152,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
         )}
         <button
           onClick={onToggleSidebar}
-          className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-900 lg:hidden"
+           className="p-2.5 min-w-11 min-h-11 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-900 lg:hidden touch-manipulation"
+           aria-label="باز کردن منوی دسترسی"
         >
           <Menu className="w-5 h-5" />
         </button>

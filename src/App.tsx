@@ -240,7 +240,7 @@ const MainLayout: React.FC = () => {
         }}
       />
 
-      <div className="flex-1 flex">
+       <div className="flex-1 flex min-w-0">
         <Sidebar
           activeTab={selectedVideoId ? '' : activeTab}
           setActiveTab={(tab) => {
@@ -252,7 +252,7 @@ const MainLayout: React.FC = () => {
           onOpenUpload={() => setIsUploadOpen(true)}
         />
 
-        <main className="flex-1 lg:mr-64 p-4 sm:p-6 lg:p-8 min-w-0">
+         <main className="flex-1 lg:mr-64 p-3 sm:p-6 lg:p-8 min-w-0 overflow-x-hidden pb-[max(1rem,env(safe-area-inset-bottom))]">
           {renderContent()}
         </main>
       </div>

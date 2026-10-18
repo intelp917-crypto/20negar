@@ -141,7 +141,7 @@ export const NewVersionModal: React.FC<NewVersionModalProps> = ({
               <div className="p-3.5 rounded-2xl bg-zinc-950 border border-zinc-800 flex items-center justify-between">
                 <div className="flex items-center gap-3 overflow-hidden">
                   <FileVideo className="w-5 h-5 text-purple-400 shrink-0" />
-                  <div className="overflow-hidden">
+                  <div className="min-w-0 overflow-hidden">
                     <div className="text-zinc-200 font-semibold truncate">{file.name}</div>
                     <div className="text-zinc-500 font-mono mt-0.5">{formatFileSize(file.size)}</div>
                   </div>

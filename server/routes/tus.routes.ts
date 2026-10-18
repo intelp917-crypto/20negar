@@ -8,7 +8,7 @@ import { authenticate, requireRole, AuthenticatedUser } from '../middleware/auth
 import { AuthService } from '../services/auth.service.ts';
 import { STORAGE_DIR } from '../config.ts';
 import { createSessionFromCompletedFile } from './upload.routes.ts';
-import { decideUploadFinish, getUploadSession, isUploadSessionOwner, upsertUploadSession, updateUploadSession } from '../services/upload.service.ts';
+import { decideUploadFinish, getUploadSession, isUploadSessionOwner, normalizeUploadFilename, upsertUploadSession, updateUploadSession } from '../services/upload.service.ts';
 
 /**
  * سیستم آپلود TUS (پروتکل استاندارد آپلود ازسره‌گیر — tus.io)
@@ -110,7 +110,7 @@ export const tusServer = new TusServer({
     }
 
     const meta: Record<string, string> = upload.metadata || {};
-    const filename = String(meta.filename || '').trim();
+    const filename = normalizeUploadFilename(meta.filename);
     if (!filename) {
       throw tusError(400, 'نام فایل ارسال نشده است. لطفاً فایل را دوباره انتخاب کنید.');
     }
@@ -181,7 +181,7 @@ export const tusServer = new TusServer({
         // شناسه نشست = شناسه آپلود TUS تا کلاینت بتواند همان را به POST /api/videos بفرستد
         id: /^[a-f0-9]{32}$/.test(String(upload.id)) ? String(upload.id) : undefined,
         userId,
-        originalName: meta.filename || 'video.mp4',
+        originalName: normalizeUploadFilename(meta.filename) || 'video.mp4',
         mimeType: meta.fileType || 'video/mp4',
         fileSize: size,
         sourcePath: src,

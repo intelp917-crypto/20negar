@@ -10,22 +10,15 @@ import {
   RotateCw,
   PictureInPicture,
   Check,
-  Zap,
-  Sliders,
   Loader2,
   AlertCircle,
   RotateCcw as ReloadIcon,
 } from 'lucide-react';
-// Type-only import: hls.js is loaded on demand (see setupSource) so it never
-// bloats the initial bundle. This keeps the app shell small on phones.
-import type HlsType from 'hls.js';
-import { api, getStoredToken } from '../api/client.ts';
-import { VideoQuality } from '../types/index.ts';
+import { api } from '../api/client.ts';
 
 interface VideoPlayerProps {
   videoId: number;
   title: string;
-  qualities?: VideoQuality[];
   posterUrl?: string;
   autoPlay?: boolean;
 }
@@ -48,13 +41,11 @@ const isCurrentSource = (video: HTMLVideoElement, url: string): boolean => {
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   videoId,
   title,
-  qualities = [],
   posterUrl,
   autoPlay = true,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<HlsType | null>(null);
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isBuffering, setIsBuffering] = useState<boolean>(true);
@@ -68,30 +59,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isPseudoFullscreen, setIsPseudoFullscreen] = useState<boolean>(false);
   const lastFullscreenToggleRef = useRef<number>(0);
-  const [selectedQuality, setSelectedQuality] = useState<string>('Auto');
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
-  const [showQualityMenu, setShowQualityMenu] = useState<boolean>(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState<boolean>(false);
   const [controlsVisible, setControlsVisible] = useState<boolean>(true);
   const [bufferedEnd, setBufferedEnd] = useState<number>(0);
-  const [estimatedQualityLevel, setEstimatedQualityLevel] = useState<string>('');
-  // کاهش خودکار کیفیت (حالت Auto): وقتی پخش بافر می‌کند و HLS چندسطحی در دسترس نیست
-  const [autoQuality, setAutoQuality] = useState<string | null>(null);
-  const [autoNotice, setAutoNotice] = useState<string | null>(null);
-  const autoQualityRef = useRef<string | null>(null);
-  const stallTimesRef = useRef<number[]>([]);
   const playbackStartedRef = useRef(false);
   const sourceErrorsRef = useRef<{ url: string; count: number }>({ url: '', count: 0 });
-  const autoNoticeTimerRef = useRef<number | null>(null);
-  const qualitiesRef = useRef(qualities);
-  qualitiesRef.current = qualities;
 
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const watchdogRef = useRef<number | null>(null);
-  const hlsRetriesRef = useRef(0);
   const hasSetupRef = useRef(false);
   const inViewRef = useRef(true);
-  const fallbackRef = useRef<(quality?: string) => void>(() => {});
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -108,32 +86,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         const video = videoRef.current;
         if (!video) return;
         if (video.readyState >= 3) return; // در حال پخش است
-        const src = video.currentSrc || video.src || '';
-        if (src.includes('/hls/')) {
-          console.warn('[VideoPlayer] HLS did not become ready in time — falling back to direct MP4.');
-          fallbackRef.current('Original');
-        } else {
-          setHasError(true);
-          setErrorMessage('پخش ویدیو بیش از حد طول کشید؛ اتصال اینترنت خود را بررسی کنید.');
-          setIsBuffering(false);
-        }
+        setHasError(true);
+        setErrorMessage('پخش ویدیو بیش از حد طول کشید؛ اتصال اینترنت خود را بررسی کنید.');
+        setIsBuffering(false);
       }, seconds * 1000);
     },
     [clearWatchdog]
   );
 
-  const fallbackToDirectMp4 = useCallback((qualityTarget: string = 'Original') => {
+  const fallbackToDirectMp4 = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
-
     const savedTime = video.currentTime;
     const wasPlaying = !video.paused && !video.ended;
-    const mp4Url = api.getStreamUrl(videoId, qualityTarget);
+    const mp4Url = api.getStreamUrl(videoId);
 
     setHasError(false);
     setErrorMessage(null);
@@ -160,26 +127,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
     armWatchdog(20);
   }, [videoId, armWatchdog]);
-  fallbackRef.current = fallbackToDirectMp4;
-
-  /** برچسب فارسی کیفیت‌ها برای پیام‌ها */
-  const qualityLabel = (q: string): string => (q === 'Original' ? 'کیفیت اصلی' : q);
-
-  /** هدف منبع پخش در حالت خودکار (با احتساب کاهش خودکار کیفیت) */
-  const autoTarget = (): string => autoQualityRef.current ?? 'Original';
-
-  /**
-   * کاهش یک پله‌ای کیفیت در حالت خودکار — با تغییر state، setupSource دوباره اجرا
-   * شده و منبع پخش را روی کیفیت پایین‌تر می‌گذارد (موقعیت پخش حفظ می‌شود).
-   * معیار: ارتفاع واقعی ویدیوی در حال پخش (videoHeight) تا همیشه پایین‌تر از فعلی برویم.
-   */
-  const downgradeAutoQuality = useCallback((): boolean => {
-    // کیفیت هرگز به‌صورت خودکار کاهش نمی‌یابد (الزام پروژه: حفظ کامل کیفیت منبع).
-    // کاهش کیفیت فقط با انتخاب دستی کاربر در منوی کیفیت ممکن است.
-    return false;
-  }, []);
-
-  const availableQualityNames = ['Auto', ...qualities.map((q) => q.quality)];
   const speedOptions = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
   const formatTime = (seconds: number) => {
@@ -206,152 +153,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setHasError(false);
     setErrorMessage(null);
     setIsBuffering(true);
-    hlsRetriesRef.current = 0;
     clearWatchdog();
-
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
+    const streamUrl = api.getStreamUrl(videoId);
+    if (!isCurrentSource(video, streamUrl)) {
+      video.src = streamUrl;
+      video.load();
     }
-
-    if (selectedQuality !== 'Auto') {
-      // انتخاب دستی کیفیت → پخش مستقیم MP4 همان کیفیت
-      fallbackToDirectMp4(selectedQuality);
-      return;
+    if (savedCurrentTime > 0 && isFinite(savedCurrentTime)) {
+      const restoreTime = () => {
+        try { video.currentTime = savedCurrentTime; } catch { /* metadata not ready */ }
+        video.removeEventListener('loadedmetadata', restoreTime);
+      };
+      video.addEventListener('loadedmetadata', restoreTime);
     }
-
-    // اگر در حالت خودکار کیفیت قبلاً پایین‌تر آمده، دیگر HLS نچسب — مستقیم همان کیفیت
-    if (autoQuality) {
-      fallbackToDirectMp4(autoQuality);
-      return;
-    }
-
-    const hlsUrl = api.getHlsUrl(videoId);
-
-    // بررسی سریع وجود پلی‌لیست HLS؛ اگر هنوز آماده نیست بلافاصله به MP4 مستقیم برو
-    // (برای ویدیوهای تازه آپلودشده که هنوز ترنسکد نشده‌اند)
-    let hlsAvailable = true;
-    try {
-      const res = await fetch(hlsUrl, { method: 'HEAD', cache: 'no-store' });
-      hlsAvailable = res.ok;
-    } catch {
-      hlsAvailable = true; // مشکل موقت شبکه — بگذار hls.js خودش تلاش کند
-    }
-
-    if (!videoRef.current) return; // کامپوننت در حین بررسی بسته شده
-
-    if (!hlsAvailable) {
-      fallbackToDirectMp4(autoTarget());
-      return;
-    }
-
-    // hls.js (a large library) is fetched only when HLS playback is actually used.
-    let Hls: typeof HlsType;
-    try {
-      ({ default: Hls } = await import('hls.js'));
-    } catch {
-      fallbackToDirectMp4(autoTarget());
-      return;
-    }
-
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 90,
-        // Never cap the level to the player size, and never drop quality
-        // automatically — the highest available rendition is used.
-        capLevelToPlayerSize: false,
-        xhrSetup: (xhr) => {
-          const token = getStoredToken();
-          if (token) {
-            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-          }
-        },
-      });
-      hlsRef.current = hls;
-      hls.loadSource(hlsUrl);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        // Pin playback to the highest available rendition (no auto downshift).
-        const highestLevel = Math.max(0, hls.levels.length - 1);
-        hls.currentLevel = highestLevel;
-        hls.loadLevel = highestLevel;
-        setIsBuffering(false);
-        if (savedCurrentTime > 0 && isFinite(savedCurrentTime)) {
-          try {
-            video.currentTime = savedCurrentTime;
-          } catch {
-            // ignore
-          }
-        }
-        if (wasPlaying || (isFirstSetup && autoPlay)) {
-          video.play().catch(() => {});
-        }
-      });
-
-      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
-        const level = hls.levels[data.level];
-        if (level && level.height > 0) {
-          setEstimatedQualityLevel(`${level.height}p`);
-        }
-      });
-
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal) return;
-
-        const status = (data.response as { code?: number } | undefined)?.code;
-        if (status === 404) {
-          // پلی‌لیست هنوز ساخته نشده → مستقیم MP4
-          fallbackToDirectMp4(autoTarget());
-          return;
-        }
-
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && hlsRetriesRef.current < 1) {
-          hlsRetriesRef.current += 1;
-          console.warn('[Hls] Fatal network error — retrying once before fallback...');
-          hls.startLoad();
-          return;
-        }
-
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && hlsRetriesRef.current < 2) {
-          hlsRetriesRef.current += 1;
-          console.warn('[Hls] Fatal media error — attempting recovery...');
-          hls.recoverMediaError();
-          return;
-        }
-
-        console.warn('[Hls] Fatal error encountered, smoothly falling back to direct MP4 stream...');
-        fallbackToDirectMp4(autoTarget());
-      });
-
-      armWatchdog(15);
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = hlsUrl;
-      if (savedCurrentTime > 0 && isFinite(savedCurrentTime)) {
-        try {
-          video.currentTime = savedCurrentTime;
-        } catch {
-          // ignore
-        }
-      }
-      if (wasPlaying || (isFirstSetup && autoPlay)) {
-        video.play().catch(() => {});
-      }
-      armWatchdog(15);
-    } else {
-      fallbackToDirectMp4(autoTarget());
-    }
-  }, [videoId, selectedQuality, autoQuality, autoPlay, fallbackToDirectMp4, clearWatchdog, armWatchdog]);
+    if (wasPlaying || (isFirstSetup && autoPlay)) video.play().catch(() => {});
+    armWatchdog(20);
+  }, [videoId, autoPlay, clearWatchdog, armWatchdog]);
 
   useEffect(() => {
     setupSource();
     return () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
       clearWatchdog();
     };
   }, [setupSource, clearWatchdog]);
@@ -370,17 +191,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return () => io.disconnect();
   }, []);
 
-  // با تعویض ویدیو، کاهش خودکار کیفیت و شمارنده بافرها صفر می‌شود
+  // Reset transient playback state when the video changes.
   useEffect(() => {
-    autoQualityRef.current = null;
-    stallTimesRef.current = [];
     playbackStartedRef.current = false;
     sourceErrorsRef.current = { url: '', count: 0 };
-    setAutoQuality(null);
-    setAutoNotice(null);
-    return () => {
-      if (autoNoticeTimerRef.current) window.clearTimeout(autoNoticeTimerRef.current);
-    };
   }, [videoId]);
 
   const handleVideoError = () => {
@@ -397,12 +211,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       stats.count = 1;
     }
 
-    const target = api.getStreamUrl(videoId, autoTarget());
+    const target = api.getStreamUrl(videoId);
     const alreadyDirect = isCurrentSource(video, target);
 
     if (!alreadyDirect && stats.count < 2) {
       console.warn('[VideoPlayer] Video element reported error. Falling back to direct MP4 stream...');
-      fallbackToDirectMp4(autoTarget());
+      fallbackToDirectMp4();
       return;
     }
 
@@ -418,7 +232,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     if (isPlaying) {
       controlsTimeoutRef.current = setTimeout(() => {
-        if (!showQualityMenu && !showSpeedMenu) {
+        if (!showSpeedMenu) {
           setControlsVisible(false);
         }
       }, 3000);
@@ -630,15 +444,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setShowSpeedMenu(false);
   };
 
-  const handleQualitySelect = (quality: string) => {
-    // انتخاب دستی → کاهش خودکار کیفیت صفر می‌شود
-    autoQualityRef.current = null;
-    setAutoQuality(null);
-    stallTimesRef.current = [];
-    setSelectedQuality(quality);
-    setShowQualityMenu(false);
-  };
-
   const skipTime = (amount: number) => {
     if (!videoRef.current) return;
     videoRef.current.currentTime = Math.max(0, Math.min(duration, videoRef.current.currentTime + amount));
@@ -719,37 +524,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  const getQualityButtonLabel = () => {
-    if (selectedQuality === 'Auto') {
-      if (autoQuality) return `خودکار (${qualityLabel(autoQuality)})`;
-      return estimatedQualityLevel ? `خودکار (${estimatedQualityLevel})` : 'خودکار (هوشمند)';
-    }
-    if (selectedQuality === 'Original') return 'کیفیت اصلی';
-    return selectedQuality;
-  };
-
-  /**
-   * بافر شدن پشت‌سرهم در حالت خودکار → کاهش خودکار کیفیت.
-   * اگر HLS چندسطحی (نردبان کیفیت) فعال باشد، خود hls.js کیفیت را تطبیق می‌دهد
-   * و اینجا فقط برای حالت تک‌کیفیت/پخش مستقیم وارد عمل می‌شویم.
-   */
   const handleWaiting = (): void => {
     setIsBuffering(true);
-    if (selectedQuality !== 'Auto') return;
-    if ((hlsRef.current?.levels?.length ?? 0) > 1) return; // ABR خودِ hls.js
-    const video = videoRef.current;
-    if (!video || !playbackStartedRef.current || video.currentTime < 1) return;
-
-    const now = Date.now();
-    const recent = stallTimesRef.current.filter((t) => now - t < 30000);
-    recent.push(now);
-    stallTimesRef.current = recent;
-
-    if (recent.length >= 2) {
-      // Quality is intentionally never reduced automatically: the studio
-      // requires the original quality at all times. Buffering is preferred.
-      stallTimesRef.current = [];
-    }
   };
 
   return (
@@ -757,7 +533,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       ref={containerRef}
       onMouseMove={handleMouseMove}
       onTouchStart={handleMouseMove}
-      onMouseLeave={() => isPlaying && !showQualityMenu && !showSpeedMenu && setControlsVisible(false)}
+       onMouseLeave={() => isPlaying && !showSpeedMenu && setControlsVisible(false)}
       className={`w-full aspect-video bg-zinc-950 overflow-hidden shadow-2xl group select-none flex items-center justify-center transition-all ${
         isPseudoFullscreen
           ? 'fixed inset-0 z-[99999] w-screen h-screen rounded-none bg-black border-none'
@@ -765,8 +541,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }`}
       dir="ltr"
     >
-      <video
-        ref={videoRef}
+       <video
+         ref={videoRef}
+         preload="metadata"
+         controlsList="nodownload"
         poster={posterUrl}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={() => {
@@ -802,16 +580,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* اعلان کاهش خودکار کیفیت */}
-      {autoNotice && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 pointer-events-none" dir="rtl">
-          <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-500/15 border border-amber-400/40 backdrop-blur-md shadow-lg">
-            <Zap className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-            <span className="text-[11px] font-semibold text-amber-100">{autoNotice}</span>
-          </div>
-        </div>
-      )}
-
       {/* Error Overlay */}
       {hasError && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/90 p-4 text-center z-30" dir="rtl">
@@ -819,7 +587,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           <h4 className="text-sm font-bold text-zinc-100">خطا در بارگذاری ویدیو</h4>
           <p className="text-xs text-zinc-400 mt-1 max-w-sm">{errorMessage}</p>
           <button
-            onClick={() => fallbackToDirectMp4(autoTarget())}
+             onClick={() => fallbackToDirectMp4()}
             className="mt-3 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg"
           >
             <ReloadIcon className="w-3.5 h-3.5" />
@@ -840,7 +608,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Top Bar with Title & Quality Indicator */}
+      {/* Top Bar with Title */}
       <div
         className={`absolute top-0 left-0 right-0 p-3 sm:p-4 bg-gradient-to-b from-black/85 via-black/40 to-transparent transition-opacity duration-300 pointer-events-none z-20 ${
           controlsVisible ? 'opacity-100' : 'opacity-0'
@@ -850,12 +618,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           <h3 className="text-white text-xs sm:text-sm md:text-base font-bold truncate drop-shadow-md pr-1">
             {title}
           </h3>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-lg bg-zinc-900/90 text-purple-300 border border-purple-500/40 flex items-center gap-1">
-              {selectedQuality === 'Auto' ? <Zap className="w-3 h-3 text-amber-400" /> : null}
-              {getQualityButtonLabel()}
-            </span>
-          </div>
         </div>
       </div>
 
@@ -945,83 +707,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             </div>
           </div>
 
-          {/* Right Controls: DIRECT QUALITY BUTTON, Speed, PIP, Fullscreen */}
+          {/* Right Controls: Speed, PIP, Fullscreen */}
           <div className="flex items-center gap-1 sm:gap-2 relative">
-            {/* Direct Quality Button */}
-            <div className="relative">
-              <button
-                onClick={() => {
-                  setShowQualityMenu(!showQualityMenu);
-                  setShowSpeedMenu(false);
-                }}
-                className={`px-2 py-1 rounded-xl text-[11px] sm:text-xs font-bold transition-all border flex items-center gap-1 ${
-                  showQualityMenu || selectedQuality !== 'Auto'
-                    ? 'bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-950/50'
-                    : 'bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 border-zinc-700'
-                }`}
-                title="تغییر کیفیت پخش"
-              >
-                {selectedQuality === 'Auto' ? <Zap className="w-3 h-3 text-amber-300 shrink-0" /> : <Sliders className="w-3 h-3 shrink-0" />}
-                <span className="whitespace-nowrap">{getQualityButtonLabel()}</span>
-              </button>
-
-              {/* Quality Selection Menu */}
-              {showQualityMenu && (
-                <div
-                  className="absolute right-0 bottom-full mb-2 w-56 bg-zinc-950/95 backdrop-blur-md border border-zinc-700 rounded-2xl shadow-2xl p-2 z-50 text-xs animate-in fade-in zoom-in-95 duration-100"
-                  dir="rtl"
-                >
-                  <div className="px-2.5 py-1.5 text-zinc-400 font-bold text-[10px] uppercase border-b border-zinc-800 mb-1 flex items-center justify-between">
-                    <span>کیفیت پخش آنلاین</span>
-                    <span className="text-[10px] text-purple-400 font-normal">HLS استریم</span>
-                  </div>
-
-                  <div className="space-y-1">
-                    {/* Auto Adaptive Mode */}
-                    <button
-                      onClick={() => handleQualitySelect('Auto')}
-                      className={`w-full flex items-center justify-between px-2.5 py-2 hover:bg-zinc-800/80 rounded-xl text-right transition-colors ${
-                        selectedQuality === 'Auto' ? 'text-purple-300 font-bold bg-purple-950/50 border border-purple-500/30' : 'text-zinc-200'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Zap className="w-3.5 h-3.5 text-amber-400" />
-                        <div>
-                          <div>خودکار (تطبیقی با سرعت نت)</div>
-                          <div className="text-[10px] text-zinc-400 font-normal mt-0.5">
-                            تنظیم خودکار بدون وقفه
-                          </div>
-                        </div>
-                      </div>
-                      {selectedQuality === 'Auto' && <Check className="w-3.5 h-3.5 text-purple-400" />}
-                    </button>
-
-                    {/* Manual Qualities */}
-                    {availableQualityNames.filter((q) => q !== 'Auto').map((q) => (
-                      <button
-                        key={q}
-                        onClick={() => handleQualitySelect(q)}
-                        className={`w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-zinc-800/80 rounded-xl text-right transition-colors ${
-                          selectedQuality === q ? 'text-purple-300 font-bold bg-purple-950/50 border border-purple-500/30' : 'text-zinc-300'
-                        }`}
-                      >
-                        <span className="font-mono">
-                          {q === 'Original' ? 'کیفیت اصلی (Master Cut)' : `${q} ${q === '1080p' ? '(Full HD)' : q === '720p' ? '(HD)' : ''}`}
-                        </span>
-                        {selectedQuality === q && <Check className="w-3.5 h-3.5 text-purple-400" />}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
             {/* Playback Speed Menu */}
             <div className="relative">
               <button
                 onClick={() => {
                   setShowSpeedMenu(!showSpeedMenu);
-                  setShowQualityMenu(false);
                 }}
                 className="px-2 py-1 rounded-xl text-[11px] sm:text-xs font-mono font-bold bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 transition-colors"
                 title="سرعت پخش"
@@ -1066,9 +758,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             <button
               type="button"
               onClick={(e) => {
-                toggleFullscreen(e);
-              }}
-              onTouchEnd={(e) => {
                 toggleFullscreen(e);
               }}
               className="p-2 sm:p-1.5 min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center hover:text-purple-400 text-zinc-100 transition-colors rounded-xl hover:bg-white/10 active:scale-95 touch-manipulation z-40 cursor-pointer pointer-events-auto"

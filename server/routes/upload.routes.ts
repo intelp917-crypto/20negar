@@ -5,7 +5,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
 import { STORAGE_DIR } from '../config.ts';
-import { createUploadSession, updateUploadSession } from '../services/upload.service.ts';
+import { createUploadSession, normalizeUploadFilename, updateUploadSession } from '../services/upload.service.ts';
 
 /**
  * سیستم آپلود موازی و مقاوم در برابر قطعی (Parallel Chunked Upload)
@@ -227,7 +227,8 @@ setInterval(cleanupExpired, 60 * 60 * 1000).unref?.();
 router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin', 'Admin']), (req: Request, res: Response): void => {
   try {
     const { fileName, fileSize, mimeType, chunkSize, checksum, expectedChecksum, sha256 } = req.body || {};
-    if (!fileName || !String(fileName).trim()) {
+    const originalName = normalizeUploadFilename(fileName);
+    if (!originalName) {
       res.status(400).json({ error: 'نام فایل الزامی است.' });
       return;
     }
@@ -240,7 +241,7 @@ router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin',
       res.status(400).json({ error: 'حجم فایل از سقف مجاز (۴ گیگابایت) بیشتر است.' });
       return;
     }
-    const ext = path.extname(String(fileName)).toLowerCase();
+    const ext = path.extname(originalName).toLowerCase();
     if (!ext) {
       res.status(400).json({ error: 'نام فایل باید پسوند داشته باشد (مثلاً mp4).' });
       return;
@@ -258,7 +259,7 @@ router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin',
     const meta: SessionMeta = {
       id: crypto.randomBytes(16).toString('hex'),
       userId: req.user!.id,
-      originalName: String(fileName),
+      originalName,
       mimeType: String(mimeType || 'video/mp4'),
       fileSize: size,
       chunkSize: cs,

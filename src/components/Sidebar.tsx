@@ -128,12 +128,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       <aside
-        className={`fixed top-16 bottom-0 right-0 w-64 bg-zinc-950 border-l border-zinc-800/80 z-40 flex flex-col justify-between transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+         className={`fixed top-16 bottom-0 right-0 w-[min(18rem,calc(100vw-1rem))] bg-zinc-950 border-l border-zinc-800/80 z-40 flex flex-col justify-between transition-transform duration-300 ease-in-out lg:translate-x-0 ${
           isOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
         dir="rtl"
       >
-        <div className="p-4 space-y-6 overflow-y-auto">
+         <div className="p-3 sm:p-4 space-y-5 sm:space-y-6 overflow-y-auto overscroll-contain">
           {/* Role Header Badge */}
           <div className="p-3.5 rounded-2xl bg-zinc-900/60 border border-zinc-800">
             <div className="text-[11px] text-zinc-500 font-semibold">
@@ -156,7 +156,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <button
                   key={item.id}
                   onClick={() => handleSelect(item)}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                   className={`w-full min-h-11 flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all touch-manipulation ${
                     isActive
                       ? 'bg-purple-600 text-white shadow-lg shadow-purple-950/50'
                       : 'text-zinc-400 hover:text-white hover:bg-zinc-900'

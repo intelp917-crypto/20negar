@@ -293,7 +293,9 @@ export class VideoService {
   }): VideoDto {
     const now = new Date().toISOString();
     const status = 'PendingReview';
-    const processingStatus = 'Processing';
+    // Original files are streamed as uploaded. Do not enqueue FFmpeg/transcoding
+    // jobs: playback must not depend on a server-side quality ladder.
+    const processingStatus = 'Ready';
 
     // Verify supervisor exists
     const supervisor = db.queryOne<{ id: number; display_name: string }>(
@@ -334,9 +336,6 @@ export class VideoService {
     );
 
     const newVideoId = res.lastInsertRowid;
-
-    // Queue for transcoding background job
-    TranscoderService.queueVideo(newVideoId);
 
     const uploadedByCameraman = Boolean(params.uploadedById);
     const uploaderLabel = uploadedByCameraman ? 'تصویربردار' : 'تدوین‌گر';

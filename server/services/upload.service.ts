@@ -39,6 +39,22 @@ export interface CreateUploadSessionInput {
   checksumExpected?: string | null;
 }
 
+/** Keep client-provided names useful while preventing oversized metadata values. */
+export const MAX_UPLOAD_FILENAME_LENGTH = 255;
+
+export function normalizeUploadFilename(value: string | null | undefined): string {
+  const raw = String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  // Browsers may submit a path (especially older clients); only retain the name.
+  const basename = raw.replace(/\\/g, '/').split('/').pop() || '';
+  if (!basename) return '';
+  if (Array.from(basename).length <= MAX_UPLOAD_FILENAME_LENGTH) return basename;
+
+  const extension = basename.lastIndexOf('.') > 0 ? basename.slice(basename.lastIndexOf('.')) : '';
+  const stem = extension ? basename.slice(0, -extension.length) : basename;
+  const available = Math.max(1, MAX_UPLOAD_FILENAME_LENGTH - Array.from(extension).length);
+  return `${Array.from(stem).slice(0, available).join('')}${Array.from(extension).slice(0, MAX_UPLOAD_FILENAME_LENGTH - available).join('')}`;
+}
+
 export type UploadSessionUpdate = Partial<Pick<UploadSession,
   'actualSize' | 'tempKey' | 'finalKey' | 'state' | 'expiresAt' |
   'checksumActual' | 'verificationStatus' | 'verifiedAt' | 'finalizedVideoId' |
@@ -71,7 +87,7 @@ const SESSION_COLUMNS = `
 
 export function validateCreateUploadSessionInput(input: CreateUploadSessionInput): void {
   if (!Number.isInteger(input.ownerId) || input.ownerId <= 0) throw new Error('ownerId must be a positive integer');
-  if (!input.filename.trim() || input.filename.length > 512) throw new Error('filename is required and must be at most 512 characters');
+  if (!normalizeUploadFilename(input.filename)) throw new Error('filename is required');
   if (!Number.isSafeInteger(input.expectedSize) || input.expectedSize < 0) throw new Error('expectedSize must be a non-negative safe integer');
   if (!input.mime.trim() || input.mime.length > 255) throw new Error('mime is required and must be at most 255 characters');
   if (Number.isNaN(Date.parse(input.expiresAt))) throw new Error('expiresAt must be an ISO date');
@@ -79,13 +95,14 @@ export function validateCreateUploadSessionInput(input: CreateUploadSessionInput
 
 export function createUploadSession(input: CreateUploadSessionInput): UploadSession {
   validateCreateUploadSessionInput(input);
+  const filename = normalizeUploadFilename(input.filename);
   const id = input.id || randomUUID();
   if (!/^[a-f0-9-]{16,64}$/i.test(id)) throw new Error('id must be a safe upload-session identifier');
   const now = new Date().toISOString();
   db.run(
     `INSERT INTO upload_sessions (id, owner_id, filename, expected_size, mime, temp_key, expires_at, checksum_expected, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.ownerId, input.filename, input.expectedSize, input.mime, input.tempKey ?? null, input.expiresAt, input.checksumExpected ?? null, now, now]
+     [id, input.ownerId, filename, input.expectedSize, input.mime, input.tempKey ?? null, input.expiresAt, input.checksumExpected ?? null, now, now]
   );
   return getUploadSession(input.ownerId, id)!;
 }
@@ -93,6 +110,7 @@ export function createUploadSession(input: CreateUploadSessionInput): UploadSess
 /** Create the durable record for a transport upload, or safely refresh its metadata. */
 export function upsertUploadSession(input: CreateUploadSessionInput): UploadSession {
   validateCreateUploadSessionInput(input);
+  const filename = normalizeUploadFilename(input.filename);
   const id = input.id || randomUUID();
   if (!/^[a-f0-9-]{16,64}$/i.test(id)) throw new Error('id must be a safe upload-session identifier');
   const now = new Date().toISOString();
@@ -105,7 +123,7 @@ export function upsertUploadSession(input: CreateUploadSessionInput): UploadSess
        mime = excluded.mime, temp_key = COALESCE(upload_sessions.temp_key, excluded.temp_key),
        expires_at = excluded.expires_at, checksum_expected = COALESCE(upload_sessions.checksum_expected, excluded.checksum_expected),
        updated_at = excluded.updated_at`,
-    [id, input.ownerId, input.filename, input.expectedSize, input.mime, input.tempKey ?? null, input.expiresAt, input.checksumExpected ?? null, now, now]
+     [id, input.ownerId, filename, input.expectedSize, input.mime, input.tempKey ?? null, input.expiresAt, input.checksumExpected ?? null, now, now]
   );
   return getUploadSession(input.ownerId, id)!;
 }

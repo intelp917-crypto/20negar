@@ -484,10 +484,9 @@ export const api = {
   },
 
   // Media URL helper
-  getStreamUrl: (videoId: number, quality?: string) => {
+  getStreamUrl: (videoId: number) => {
     const token = getStoredToken();
-    const q = quality && quality !== 'Auto' ? `&quality=${encodeURIComponent(quality)}` : '';
-    return `/api/videos/${videoId}/stream?token=${encodeURIComponent(token || '')}${q}`;
+    return `/api/videos/${videoId}/stream?token=${encodeURIComponent(token || '')}`;
   },
 
   getHlsUrl: (videoId: number) => {
@@ -500,10 +499,9 @@ export const api = {
     return `/api/videos/${videoId}/thumbnail?token=${encodeURIComponent(token || '')}`;
   },
 
-  getDownloadUrl: (videoId: number, quality?: string) => {
+  getDownloadUrl: (videoId: number) => {
     const token = getStoredToken();
-    const q = quality ? `&quality=${encodeURIComponent(quality)}` : '';
-    return `/api/videos/${videoId}/download?token=${encodeURIComponent(token || '')}${q}`;
+    return `/api/videos/${videoId}/download?token=${encodeURIComponent(token || '')}`;
   },
 };
 

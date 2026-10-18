@@ -221,7 +221,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 <div className="w-10 h-10 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 flex items-center justify-center shrink-0">
                   <FileVideo className="w-5 h-5" />
                 </div>
-                <div className="overflow-hidden">
+                <div className="min-w-0 overflow-hidden">
                   <div className="text-sm font-semibold text-zinc-200 truncate">{file.name}</div>
                   <div className="text-xs text-zinc-400 flex items-center gap-2 mt-0.5 font-mono">
                     <span>{formatFileSize(file.size)}</span>

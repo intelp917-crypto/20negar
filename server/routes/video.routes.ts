@@ -10,6 +10,7 @@ import { PRIVATE_VIDEOS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
 import { AuditService } from '../services/audit.service.ts';
 import { streamFromTransferEngine } from '../services/transfer.service.ts';
 import { resolveVideoProject, ProjectSelectionError } from '../services/project.service.ts';
+import { normalizeUploadFilename } from '../services/upload.service.ts';
 import { loadSession as loadChunkSession, dataFile as chunkDataFile, cleanupSession as cleanupChunkSession } from './upload.routes.ts';
 
 const router = Router();
@@ -174,7 +175,7 @@ router.post(
         chunkTempPath = assembled.tempPath;
       } else if (req.file) {
         tempPath = req.file.path;
-        originalName = req.file.originalname;
+        originalName = normalizeUploadFilename(req.file.originalname) || 'video.mp4';
         fileSize = req.file.size;
       } else {
         res.status(400).json({ error: 'هیچ فایل ویدیویی ارسال نشده است.' });
@@ -252,7 +253,7 @@ router.post(
         chunkTempPath = assembled.tempPath;
       } else if (req.file) {
         tempPath = req.file.path;
-        originalName = req.file.originalname;
+        originalName = normalizeUploadFilename(req.file.originalname) || 'video.mp4';
         fileSize = req.file.size;
       } else {
         res.status(400).json({ error: 'لطفا فایل نسخه جدید را انتخاب کنید.' });
@@ -427,33 +428,18 @@ router.get('/:id/thumbnail', authenticate, (req: Request, res: Response): void =
   }
 });
 
-// GET /api/videos/:id/stream - Secure Video Streaming with HTTP Range Support & Quality Selection
+// GET /api/videos/:id/stream - Secure original-file streaming with HTTP Range support
 router.get('/:id/stream', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const videoId = parseInt(req.params.id, 10);
-    const requestedQuality = (req.query.quality as string) || 'Original';
-
     const video = VideoService.getVideoById(videoId, req.user!);
     if (!video) {
       res.status(404).json({ error: 'ویدیو یافت نشد یا دسترسی غیرمجاز است.' });
       return;
     }
 
-    let relativeFilePath = video.originalPath;
-    if (requestedQuality !== 'Original' && requestedQuality !== 'Auto' && video.qualities) {
-      const match = video.qualities.find((q) => q.quality === requestedQuality);
-      if (match) {
-        const qualityFilename = `video_${videoId}_${match.quality}.mp4`;
-        const testPath = path.join(PRIVATE_VIDEOS_DIR, qualityFilename);
-        if (fs.existsSync(testPath)) {
-          relativeFilePath = `videos/${qualityFilename}`;
-        }
-      }
-    }
-
-    const fullPath = fileStorage.getPhysicalPath(relativeFilePath);
-    const qualityExists = fs.existsSync(fullPath);
-    const targetFile = qualityExists ? fullPath : fileStorage.getPhysicalPath(video.originalPath);
+    const relativeFilePath = video.originalPath;
+    const targetFile = fileStorage.getPhysicalPath(relativeFilePath);
 
     if (!fs.existsSync(targetFile)) {
       res.status(404).json({ error: 'فایل ویدیو در حافظه ذخیره‌سازی یافت نشد.' });
@@ -461,8 +447,7 @@ router.get('/:id/stream', authenticate, async (req: Request, res: Response): Pro
     }
 
     // Fast path: let the Rust engine stream the file (full Range support).
-    const storageKey = qualityExists ? relativeFilePath : video.originalPath;
-    if (await streamFromTransferEngine(req, res, storageKey, { attachment: false })) {
+    if (await streamFromTransferEngine(req, res, relativeFilePath, { attachment: false })) {
       return;
     }
 
@@ -561,11 +546,10 @@ router.get(
   }
 );
 
-// GET /api/videos/:id/download - Secure Quality Download
+// GET /api/videos/:id/download - Download the original uploaded file
 router.get('/:id/download', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const videoId = parseInt(req.params.id, 10);
-    const requestedQuality = (req.query.quality as string) || 'Original';
 
     const video = VideoService.getVideoById(videoId, req.user!);
     if (!video) {
@@ -573,25 +557,9 @@ router.get('/:id/download', authenticate, async (req: Request, res: Response): P
       return;
     }
 
-    let relativeFilePath = video.originalPath;
-    let downloadFilename = video.originalFilename;
-
-    if (requestedQuality !== 'Original' && requestedQuality !== 'Auto' && video.qualities) {
-      const match = video.qualities.find((q) => q.quality === requestedQuality);
-      if (match) {
-        const qualityFilename = `video_${videoId}_${match.quality}.mp4`;
-        const testPath = path.join(PRIVATE_VIDEOS_DIR, qualityFilename);
-        if (fs.existsSync(testPath)) {
-          relativeFilePath = `videos/${qualityFilename}`;
-          const baseNoExt = video.title.replace(/[^a-zA-Z0-9\u0600-\u06FF._-]/g, '_');
-          downloadFilename = `${baseNoExt}_${match.quality}.mp4`;
-        }
-      }
-    }
-
-    const fullPath = fileStorage.getPhysicalPath(relativeFilePath);
-    const qualityExists = fs.existsSync(fullPath);
-    const targetFile = qualityExists ? fullPath : fileStorage.getPhysicalPath(video.originalPath);
+    const relativeFilePath = video.originalPath;
+    const downloadFilename = video.originalFilename;
+    const targetFile = fileStorage.getPhysicalPath(relativeFilePath);
 
     if (!fs.existsSync(targetFile)) {
       res.status(404).json({ error: 'فایل ویدیو در حافظه ذخیره‌سازی یافت نشد.' });
@@ -603,14 +571,13 @@ router.get('/:id/download', authenticate, async (req: Request, res: Response): P
       'دانلود ویدیو',
       'Video',
       videoId,
-      `کاربر ${req.user!.displayName} نسخه ${requestedQuality} ویدیوی "${video.title}" را دانلود کرد.`,
+       `کاربر ${req.user!.displayName} فایل اصلی ویدیوی "${video.title}" را دانلود کرد.`,
       req.ip
     );
 
     // Fast path: ranged streaming download served by the Rust engine.
-    const downloadKey = qualityExists ? relativeFilePath : video.originalPath;
     if (
-      await streamFromTransferEngine(req, res, downloadKey, {
+      await streamFromTransferEngine(req, res, relativeFilePath, {
         attachment: true,
         filename: downloadFilename,
       })
