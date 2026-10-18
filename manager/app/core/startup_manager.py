@@ -8,10 +8,20 @@ class StartupManager:
         self.startup_dir = Path(startup_dir) if startup_dir else Path(os.environ.get("APPDATA", Path.home())) / "Microsoft/Windows/Start Menu/Programs/Startup"
     @property
     def shortcut_path(self) -> Path: return self.startup_dir / f"{self.app_name}.cmd"
-    def enable(self) -> Path:
+    def enable(self, overwrite: bool = False) -> Path:
         self.startup_dir.mkdir(parents=True, exist_ok=True)
+        if self.shortcut_path.exists() and not overwrite:
+            return self.shortcut_path
         # A per-user .cmd is portable and does not require elevation.
-        self.shortcut_path.write_text("@echo off\ncd /d " + subprocess.list2cmdline([str(Path(self.command[-1]).parent.parent)]) + "\n" + subprocess.list2cmdline([str(x) for x in self.command]) + "\n", encoding="utf-8")
+        cwd = Path(self.command[0]).resolve().parent if Path(self.command[0]).is_absolute() else Path.cwd()
+        content = "@echo off\ncd /d " + subprocess.list2cmdline([str(cwd)]) + "\n" + subprocess.list2cmdline([str(x) for x in self.command]) + "\n"
+        temp = self.shortcut_path.with_suffix(".tmp")
+        temp.write_text(content, encoding="utf-8")
+        os.replace(temp, self.shortcut_path)
         return self.shortcut_path
     def disable(self) -> None: self.shortcut_path.unlink(missing_ok=True)
     def enabled(self) -> bool: return self.shortcut_path.exists()
+
+    def ensure(self) -> Path:
+        """Create the app-owned entry only when it does not already exist."""
+        return self.enable(overwrite=False)

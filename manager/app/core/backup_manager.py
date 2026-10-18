@@ -24,7 +24,9 @@ class BackupManager:
                     elif source.is_dir():
                         for file in source.rglob("*"):
                             if file.is_file():
-                                archive.write(file, file.relative_to(source.parent)); manifest["files"].append({"name": str(file.relative_to(source.parent)), "size": file.stat().st_size})
+                                 name = str(file.relative_to(source.parent)).replace("\\", "/")
+                                 digest = hashlib.sha256(file.read_bytes()).hexdigest()
+                                 archive.write(file, name); manifest["files"].append({"name": name, "size": file.stat().st_size, "sha256": digest})
                 archive.writestr("MANIFEST.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             temporary.replace(destination); return destination
         finally:
@@ -32,7 +34,19 @@ class BackupManager:
     def restore(self, archive: Path, destination: Path) -> None:
         destination = Path(destination).resolve(); destination.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive) as z:
-            for name in z.namelist():
+            names = z.namelist()
+            for name in names:
                 target = (destination / name).resolve()
                 if destination not in (target, *target.parents): raise ValueError("unsafe archive path")
-            z.extractall(destination)
+            if "MANIFEST.json" not in names: raise ValueError("backup manifest missing")
+            manifest = json.loads(z.read("MANIFEST.json"))
+            entries = {item["name"]: item for item in manifest.get("files", [])}
+            for name in names:
+                if name == "MANIFEST.json": continue
+                if name not in entries: raise ValueError("archive manifest mismatch")
+            for name, item in entries.items():
+                data = z.read(name)
+                if len(data) != item.get("size") or hashlib.sha256(data).hexdigest() != item.get("sha256"):
+                    raise ValueError("archive checksum mismatch")
+                target = destination / name; target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)

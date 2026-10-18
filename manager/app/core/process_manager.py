@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import threading
 import subprocess
 import time
-import os
 
 try:
     import psutil
@@ -16,26 +16,48 @@ class ProcessIdentity:
     pid: int
     command: tuple[str, ...]
     started_at: float
+    process_started_at: float | None = None
 
 
 class ProcessManager:
-    def __init__(self, popen_factory=subprocess.Popen): self._popen = popen_factory; self._last_process = None
+    def __init__(self, popen_factory=subprocess.Popen):
+        self._popen = popen_factory; self._last_process = None; self._reader_started = False
 
     def start(self, command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> ProcessIdentity:
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
-        proc = self._popen(command, cwd=str(cwd) if cwd else None, env=env, shell=False,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+        merged_env = os.environ.copy(); merged_env.update(env or {})
+        proc = self._popen(command, cwd=str(cwd) if cwd else None, env=merged_env, shell=False,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                            creationflags=creationflags, text=True, bufsize=1)
         self._last_process = proc
-        return ProcessIdentity(proc.pid, tuple(command), time.time())
+        started = time.time()
+        process_started = None
+        if psutil:
+            try: process_started = psutil.Process(proc.pid).create_time()
+            except (psutil.Error, OSError): pass
+        return ProcessIdentity(proc.pid, tuple(command), started, process_started)
+
+    def start_output_reader(self, callback) -> None:
+        """Read the merged stdout/stderr stream exactly once."""
+        proc = self._last_process
+        if not proc or not proc.stdout or self._reader_started: return
+        self._reader_started = True
+        def read():
+            for line in iter(proc.stdout.readline, ""):
+                callback(line)
+            proc.stdout.close()
+        threading.Thread(target=read, name="manager-process-output", daemon=True).start()
 
     def identity_matches(self, identity: ProcessIdentity) -> bool:
         if psutil:
             try:
                 process = psutil.Process(identity.pid)
                 if not process.is_running(): return False
+                if identity.process_started_at is not None and abs(process.create_time() - identity.process_started_at) > 2:
+                    return False
                 actual = tuple(process.cmdline())
-                return not actual or any(part in actual for part in identity.command) or identity.command[0] in " ".join(actual)
+                expected = tuple(str(x) for x in identity.command)
+                return bool(actual) and (actual == expected or all(part in actual for part in expected))
             except (psutil.Error, OSError): return False
         return False
 

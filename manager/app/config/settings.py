@@ -1,6 +1,6 @@
 """Validated persistent settings for the manager and the managed server."""
 from pathlib import Path
-import shutil
+from urllib.parse import urlparse
 from .defaults import AppPaths, default_paths
 from .store import ConfigStore
 
@@ -10,6 +10,7 @@ DEFAULT_SETTINGS = {
     "mode": "development",
     "startup_enabled": False,
     "start_gui_on_login": False,
+    "startup_server_enabled": False,
     "restart_on_crash": False,
     "monitor_interval": 5,
     "startup_timeout": 30,
@@ -22,12 +23,24 @@ def settings_store(paths: AppPaths | None = None) -> ConfigStore:
 
 
 def validate_settings(values: dict) -> dict:
+    if not isinstance(values, dict):
+        values = {}
     result = {**DEFAULT_SETTINGS, **values}
-    result["port"] = max(1, min(65535, int(result["port"])))
-    result["monitor_interval"] = max(1, min(3600, int(result["monitor_interval"])))
-    result["startup_timeout"] = max(5, min(600, int(result["startup_timeout"])))
-    result["low_disk_gb"] = max(0, min(1024, int(result["low_disk_gb"])))
+    for key, low, high in (("port", 1, 65535), ("monitor_interval", 1, 3600),
+                           ("startup_timeout", 5, 600), ("low_disk_gb", 0, 1024)):
+        value = result.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            value = DEFAULT_SETTINGS[key]
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = DEFAULT_SETTINGS[key]
+        result[key] = max(low, min(high, value))
+    url = result.get("health_url")
+    parsed = urlparse(url) if isinstance(url, str) else None
+    if not parsed or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        result["health_url"] = DEFAULT_SETTINGS["health_url"]
     result["mode"] = result["mode"] if result["mode"] in {"development", "production"} else "development"
-    for key in ("startup_enabled", "start_gui_on_login", "restart_on_crash"):
-        result[key] = bool(result[key])
+    for key in ("startup_enabled", "start_gui_on_login", "startup_server_enabled", "restart_on_crash"):
+        result[key] = result[key] if isinstance(result[key], bool) else DEFAULT_SETTINGS[key]
     return result

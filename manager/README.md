@@ -24,6 +24,7 @@ scripts\build_exe.bat
 - اجرای عملیات کند در `QThreadPool` با `QRunnable`؛ رابط کاربری بلاک نمی‌شود
 - خروجی خطا در status bar و fallback امن تا آماده شدن core
 - تنظیمات واقعی پورت، mode، مسیر storage، database و startup در APPDATA
+- ثبت مستقل Manager و Server در Windows Startup؛ هر entry فقط در صورت نبود ساخته می‌شود و entry موجود overwrite نمی‌شود.
 - backup اتمیک ZIP با manifest، snapshot قبل از restore و جلوگیری از Zip Slip
 - گزارش diagnostics با نسخه Node/npm/git، فضای دیسک، مسیرها و health بدون secrets
 

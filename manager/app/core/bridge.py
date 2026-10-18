@@ -10,6 +10,7 @@ import os
 import shutil
 import threading
 import time
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -49,6 +50,7 @@ class CoreBridge:
             env = os.environ.copy()
             # The server reads these overrides before creating its data folders.
             env["PORT"] = str(self.settings["port"])
+            env["NODE_ENV"] = self.settings["mode"]
             if self.settings.get("storage_dir"): env["NEGAR_STORAGE_DIR"] = str(self.settings["storage_dir"])
             if self.settings.get("database"): env["NEGAR_DB_FILE_PATH"] = str(self.settings["database"])
             self.controller = ServerController(command, self.paths.repo_root, url, env=env)
@@ -63,6 +65,13 @@ class CoreBridge:
             self.log.info(text)
         stream.close()
 
+    def _drain_line(self, line: str, label: str) -> None:
+        text = f"[{label}] {line.rstrip()}"
+        with self.output_lock:
+            self.output.append(text)
+            del self.output[:-500]
+        self.log.info(text)
+
     def service_action(self, action: str) -> dict[str, Any]:
         try:
             controller = self._controller()
@@ -73,8 +82,7 @@ class CoreBridge:
                 # Controller's ProcessManager owns stdout/stderr; attach readers once.
                 process = getattr(controller.process_manager, "_last_process", None)
                 if process:
-                    for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
-                        threading.Thread(target=self._drain, args=(stream, label), daemon=True).start()
+                    controller.process_manager.start_output_reader(lambda line: self._drain_line(line, "server"))
                 self.log.info("Server %s: pid=%s", action, identity.pid)
                 return {"ok": True, "status": "starting", "pid": identity.pid}
             if action == "stop":
@@ -131,23 +139,74 @@ class CoreBridge:
 
     def set_storage_path(self, value: str) -> dict[str, Any]:
         target = Path(value).expanduser().resolve()
+        if target == self.paths.database.resolve():
+            raise ValueError("storage and database must be independent paths")
         target.mkdir(parents=True, exist_ok=True)
         if not os.access(target, os.W_OK): raise PermissionError(f"Storage is not writable: {target}")
-        self.settings = self.save_settings({"storage_dir": str(target)})
+        old = self.settings.get("storage_dir")
         self._write_server_env({"NEGAR_STORAGE_DIR": str(target)})
+        try:
+            self.settings = self.save_settings({"storage_dir": str(target)})
+        except Exception:
+            if old: self._write_server_env({"NEGAR_STORAGE_DIR": str(old)})
+            raise
+        self.paths = replace(self.paths, storage_dir=target)
         if self.controller is not None: self.controller.env["NEGAR_STORAGE_DIR"] = str(target)
         return {"ok": True, "path": str(target), "restart_required": True}
 
+    def migrate_storage_path(self, value: str) -> dict[str, Any]:
+        """Copy media to a new root, verify every byte, then switch config.
+
+        The old root is intentionally retained until the administrator removes it.
+        Relative storage layout is preserved and the operation is restart-safe.
+        """
+        target = Path(value).expanduser().resolve()
+        source = self.paths.storage_dir.resolve()
+        if target == source: return {"ok": True, "path": str(source), "migrated": False, "message": "Already using this location"}
+        if target == self.paths.database.resolve(): raise ValueError("storage and database must be independent paths")
+        target.mkdir(parents=True, exist_ok=True)
+        files = [p for p in source.rglob("*") if p.is_file()] if source.exists() else []
+        copied = 0
+        import hashlib
+        for source_file in files:
+            relative = source_file.relative_to(source)
+            destination = target / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, destination)
+            if source_file.stat().st_size != destination.stat().st_size:
+                raise IOError(f"copy verification failed: {relative}")
+            def digest(path: Path) -> str:
+                h = hashlib.sha256()
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""): h.update(chunk)
+                return h.hexdigest()
+            if digest(source_file) != digest(destination):
+                raise IOError(f"checksum verification failed: {relative}")
+            copied += 1
+        result = self.set_storage_path(str(target))
+        return {**result, "migrated": True, "copied_files": copied, "source_retained": str(source)}
+
     def set_database_path(self, value: str) -> dict[str, Any]:
         target = Path(value).expanduser().resolve()
+        if target == self.paths.storage_dir.resolve():
+            raise ValueError("database and storage must be independent paths")
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists() and not target.is_file(): raise ValueError(f"Database path is not a file: {target}")
         if not os.access(target.parent, os.W_OK): raise PermissionError(f"Database directory is not writable: {target.parent}")
-        if self.paths.database.exists() and target != self.paths.database:
-            BackupManager(self.paths.backups_dir).create([self.paths.database])
-            shutil.copy2(self.paths.database, target)
-        self.settings = self.save_settings({"database": str(target)})
+        old = self.paths.database
+        if old.exists() and target != old:
+            BackupManager(self.paths.backups_dir).create([old])
+            shutil.copy2(old, target)
+            if target.stat().st_size != old.stat().st_size:
+                target.unlink(missing_ok=True); raise IOError("database copy verification failed")
         self._write_server_env({"NEGAR_DB_FILE_PATH": str(target)})
+        try:
+            self.settings = self.save_settings({"database": str(target)})
+        except Exception:
+            if target != old: target.unlink(missing_ok=True)
+            self._write_server_env({"NEGAR_DB_FILE_PATH": str(old)})
+            raise
+        self.paths = replace(self.paths, database=target)
         if self.controller is not None: self.controller.env["NEGAR_DB_FILE_PATH"] = str(target)
         return {"ok": True, "path": str(target), "restart_required": True, "backup_created": True}
 
@@ -160,17 +219,28 @@ class CoreBridge:
                 if line.startswith(key + "="):
                     lines[index] = f'{key}="{value.replace(chr(34), chr(92)+chr(34))}"'; found = True; break
             if not found: lines.append(f'{key}="{value}"')
-        temp = env_path.with_suffix(".tmp")
-        temp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        temp = env_path.with_name(env_path.name + ".tmp")
+        with temp.open("w", encoding="utf-8") as stream:
+            stream.write("\n".join(lines) + "\n")
+            stream.flush(); os.fsync(stream.fileno())
         os.replace(temp, env_path)
 
-    def startup(self, enabled: bool) -> dict[str, Any]:
-        command = [os.environ.get("PYTHON", "python"), str(self.paths.repo_root / "manager" / "main.py")]
-        manager = StartupManager("20Negar-Manager", command)
-        if enabled: path = manager.enable()
-        else: manager.disable(); path = manager.shortcut_path
-        self.save_settings({"startup_enabled": enabled})
-        return {"ok": True, "enabled": enabled, "path": str(path)}
+    def startup_status(self) -> dict[str, Any]:
+        startup_dir = StartupManager("20Negar-Manager", []).startup_dir
+        manager = StartupManager("20Negar-Manager", [], startup_dir)
+        server = StartupManager("20Negar-Server", [], startup_dir)
+        return {"manager": manager.enabled(), "server": server.enabled(), "directory": str(startup_dir), "manager_path": str(manager.shortcut_path), "server_path": str(server.shortcut_path)}
+
+    def startup(self, manager_enabled: bool, server_enabled: bool) -> dict[str, Any]:
+        startup_dir = StartupManager("20Negar-Manager", []).startup_dir
+        manager_command = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, str(self.paths.repo_root / "manager" / "main.py")]
+        server_command = ServerController.command_for_repo(self.paths.repo_root, self.settings["mode"])
+        manager = StartupManager("20Negar-Manager", manager_command, startup_dir)
+        server = StartupManager("20Negar-Server", server_command, startup_dir)
+        manager_path = manager.ensure() if manager_enabled else manager.disable() or manager.shortcut_path
+        server_path = server.ensure() if server_enabled else server.disable() or server.shortcut_path
+        self.save_settings({"start_gui_on_login": manager_enabled, "startup_server_enabled": server_enabled, "startup_enabled": server_enabled})
+        return {"ok": True, "manager_enabled": manager_enabled, "server_enabled": server_enabled, "manager_path": str(manager_path), "server_path": str(server_path), "directory": str(startup_dir)}
 
     def diagnostics(self) -> dict[str, Any]:
         return Diagnostics().collect(self.paths, self.settings, self.health())
