@@ -1,6 +1,4 @@
 from pathlib import Path
-import json
-import os
 import platform
 import shutil
 import subprocess

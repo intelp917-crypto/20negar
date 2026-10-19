@@ -1,0 +1,43 @@
+# 20negar configuration. Copy this file to .env before the first launch.
+# Replace every credential placeholder before starting the server.
+NODE_ENV="production"
+
+# ─── Security ────────────────────────────────────────────────────────────────
+# Secret used to sign login sessions. ALWAYS set a long random value in
+# production; never commit the real value.
+# Generate a value with: node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+JWT_SECRET=""
+
+# ─── First run (production bootstrap) ────────────────────────────────────────
+# Preconfigured accounts are not seeded. The very first SuperAdmin is created only
+# when the database has no users yet, using the values below. The password is
+# never printed to the console. Remove/rotate it after the first login.
+# SUPERADMIN_INITIAL_PASSWORD="min-8-characters"
+# SUPERADMIN_INITIAL_USERNAME="superadmin"
+# SUPERADMIN_INITIAL_DISPLAY_NAME="Super Admin"
+
+# ─── Rust transfer engine (fast upload/download) ─────────────────────────────
+# The engine is started automatically by the server when its binary exists.
+# Build it with: npm run build:transfer
+NEGAR_TRANSFER_ENABLED="true"
+NEGAR_TRANSFER_PORT="4310"
+# Optional: path to a prebuilt binary (otherwise it is auto-detected under
+# rust/negartransfer/target/release/).
+# NEGAR_TRANSFER_BIN=""
+
+# ─── Networking ──────────────────────────────────────────────────────────────
+# Also listen on the standard ports so the site stays reachable behind a VPN.
+ENABLE_STANDARD_PORTS="true"
+HTTP_PORT="80"
+SECURE_PORT="443"
+PORT="3000"
+
+# Public access and LAN transfer discovery
+# Use the exact browser-facing URL, including https:// and a port when needed.
+# PUBLIC_URL="https://203.0.113.10"
+# CORS_ORIGINS="https://203.0.113.10"
+# TRUST_PROXY="false"
+
+# Optional trusted certificate for HTTPS/PWA installation.
+# TLS_KEY_PATH="C:\\20negar\\data\\certs\\server.key"
+# TLS_CERT_PATH="C:\\20negar\\data\\certs\\server.crt"

@@ -1,6 +1,6 @@
 # 20negar Manager
 
-رابط دسکتاپ واقعی برای مدیریت سرویس 20negar با PySide6 است. برنامه سرور واقعی همین repository را با Node.js/tsx اجرا می‌کند، PID و command line را بررسی می‌کند، health endpoint واقعی `/api/health` را می‌خواند و خروجی stdout/stderr را محدود و چرخشی ثبت می‌کند.
+رابط دسکتاپ مدیریت سرویس 20negar با PySide6. برنامه سرور واقعی همین repository را با Node.js/tsx اجرا می‌کند، PID و command line را بررسی می‌کند، health endpoint واقعی `/api/health` را می‌خواند و stdout/stderr را با محدودیت حجم ثبت می‌کند.
 
 ## اجرا
 
@@ -15,39 +15,124 @@ scripts\run_manager.bat
 scripts\build_exe.bat
 ```
 
-## قابلیت‌ها
+آیکن فایل اجرایی با گزینه‌ی `-i` و فایل `scripts\20negar.ico` اعمال می‌شود (PyInstaller همراه فایل `.spec` گزینه‌ی `-i/--icon` را نمی‌پذیرد، پس build روی command line است). تصویر مبدأ `scripts/icon-512.png` است و همان تصویر با `--add-data` در `assets` باندل می‌شود تا آیکن پنجره و tray هم از آن خوانده شود.
 
-- sidebar دائمی و صفحات Dashboard، کنترل سرویس، ذخیره‌سازی و پایگاه‌داده، لاگ، پشتیبان، شبکه، به‌روزرسانی، startup، diagnostics و settings/about
-- تم dark/light و کنترل‌های start/stop/restart و health
-- انتخاب مسیر و عملیات backup/restore با تأیید کاربر
-- لاگ زنده‌ی محدود به ۵۰۰ خط
-- اجرای عملیات کند در `QThreadPool` با `QRunnable`؛ رابط کاربری بلاک نمی‌شود
-- خروجی خطا در status bar و fallback امن تا آماده شدن core
-- تنظیمات واقعی پورت، mode، مسیر storage، database و startup در APPDATA
-- ثبت مستقل Manager و Server در Windows Startup؛ هر entry فقط در صورت نبود ساخته می‌شود و entry موجود overwrite نمی‌شود.
-- backup اتمیک ZIP با manifest، snapshot قبل از restore و جلوگیری از Zip Slip
-- گزارش diagnostics با نسخه Node/npm/git، فضای دیسک، مسیرها و health بدون secrets
-
-## پیش‌نیاز و مسیرها
-
-- Windows 10/11، Python 3.11+، Node.js/npm و repository نصب‌شده 20Negar
-- تنظیمات manager در `%APPDATA%\20negar-manager\settings.json`
-- داده‌های پیش‌فرض server در `data/` شامل `cineflow.sqlite` و `storage/`
-- manager برای تغییر مسیر storage، متغیر `NEGAR_STORAGE_DIR` را به‌صورت اتمیک در `.env` می‌نویسد؛ server از `NEGAR_DATA_DIR`, `NEGAR_STORAGE_DIR`, `NEGAR_DB_FILE_PATH` و مسیرهای media پشتیبانی می‌کند.
-
-## تست
-
-از ریشه repository:
+تست‌ها (از ریشه repository):
 
 ```bat
 py -3 -m pytest manager\tests -q
 npm test
 npm run lint
-npm run build
 ```
 
-`build_exe.bat` پس از نصب requirements فایل standalone را در `manager\dist` می‌سازد. اجرای manager نیاز به باز بودن terminal ندارد؛ فقط server باید Node.js و dependencies خودش را داشته باشد.
+## رابط کاربری
+
+رابط کاربری از یک design system توکن‌محور ساخته شده است:
+
+- دو تم کامل Dark/Light با پالت، stylesheet و کنترل‌های custom-painted؛ انتخاب تم ذخیره می‌شود.
+- کارت‌های ۱۶px، spacing منظم، تایپوگرافی و بج‌های وضعیت، سوییچ‌های سفارشی، console های مونواسپیس و toast های شناور.
+- Sidebar با گروه‌بندی، نشانگر انتخاب و فوتر زنده؛ top bar با breadcrumb، وضعیت لحظه‌ای و دسترسی سریع.
+- کنترل‌های `Start/Stop` از یک state machine واحد تغذیه می‌شوند و هرگز با واقعیت اختلاف ندارند.
+- کلیدهای میان‌بر: `F5` تازه‌سازی، `Ctrl+R` ری‌استارت، `Ctrl+Shift+S` استارت/استاپ، `Ctrl+T` تم، `Ctrl+Q` خروج.
+
+### چرخه‌ی عمر سرویس
+
+فازها در `app/core/server_controller.py` محاسبه می‌شوند و رابط کاربری هر ۱ تا چند ثانیه (بر اساس `monitor_interval`) آن‌ها را می‌خواند:
+
+| فاز | معنی | دکمه |
+| --- | --- | --- |
+| `stopped` | فرآیندی وجود ندارد | Start server |
+| `starting` | فرآیند زنده است و health هنوز OK نشده | Starting… (غیرفعال) |
+| `running` | فرآیند زنده و `/api/health` سالم | Stop server |
+| `stopping` | در حال خاتمه | Stopping… (غیرفعال) |
+| `unhealthy` | فرآیند زنده ولی health پاسخ نمی‌دهد | Stop server |
+| `external` | سرور دستی اجرا شده و مدیر فقط health را می‌بیند | Stop server با پیام راهنما |
+
+پس از استارت، UI بلافاصله فاز `starting` را نشان می‌دهد، سپس با رسیدن health به `running` سوییچ می‌کند و دکمه به Stop تغییر می‌کند. فرآیند استارت شده در `settings.json` ثبت می‌شود تا اگر مدیر بسته و دوباره باز شود، دوباره به همان PID متصل شود و Stop واقعاً کار کند.
+
+## Tray روی ویندوز
+
+- به‌محض باز شدن برنامه، آیکن در ناحیه‌ی hidden icons کنار ساعت ظاهر می‌شود.
+- دکمه‌ی بستن پنجره، برنامه را به tray منتقل می‌کند (قابل تنظیم با `close_to_tray`).
+- منوی tray شامل Open، وضعیت زنده، Start/Stop، Restart، Settings و `Exit manager…` است.
+- خروج فقط از منوی tray و با تأیید اضافی انجام می‌شود. اگر سرور در حال اجرا باشد، سه گزینه وجود دارد: `Stop server and exit`، `Exit and keep server running` و `Cancel`. اگر سرور متوقف باشد، یک تأیید ساده‌ی Exit/Cancel نمایش داده می‌شود.
+- انتخاب Stop در خروج، ابتدا فرآیند را متوقف می‌کند و سپس آیکن tray را حذف و برنامه را می‌بندد.
+
+## به‌روزرسانی از GitHub
+
+صفحه‌ی **Updates** نسخه‌ی نصب‌شده را با `https://github.com/intelp917-crypto/20negar.git` مقایسه می‌کند و دکمه‌ی **Update now** کل فرآیند را انجام می‌دهد:
+
+1. بررسی read-only با `git fetch` (هیچ فایلی تغییر نمی‌کند)
+2. توقف سرور
+3. ساخت ZIP بازیابی از دیتابیس در `backups/`
+4. فقط fast-forward (`git merge --ff-only`)؛ commitهای محلی و تغییرات ذخیره‌نشده هرگز دور ریخته نمی‌شوند
+5. اگر `package.json` یا lockfile تغییر کرده باشد، `npm install`
+6. استارت مجدد سرور و تأیید از طریق `/api/health`
+
+اگر working tree تغییر commit‌نشده داشته باشد، دکمه با پیام مشخص غیرفعال می‌ماند تا کاری از دست نرود. اگر خود مدیر (پوشه‌ی `manager/`) به‌روز شود، پس از پایان یک هشدار برای ری‌استارت مدیر نمایش داده می‌شود.
+
+## HTTPS و Let's Encrypt
+
+صفحه‌ی **TLS / HTTPS** گواهی را دقیقاً همان‌جایی می‌نویسد که `server/tls.ts` می‌خواند (`<data>/certs/server.crt` و `server.key`):
+
+- **Self-signed** — بدون نیاز به دامنه؛ مناسب LAN/VPN (مرورگر هشدار می‌دهد).
+- **Let's Encrypt** — با ACME v2 و چالش HTTP-01، بدون نصب certbot یا ابزار بیرونی. مدیر حساب ACME را می‌سازد، توکن چالش را در web root منتشر می‌کند (`<data>/acme` که سرور روی `/.well-known/acme-challenge` سرو می‌کند) و زنجیره‌ی گواهی را ذخیره می‌کند.
+- **Auto-renew** — تا زمانی که مدیر باز است (حتی در tray) هر ۳۰ دقیقه بررسی می‌کند و اگر کمتر از N روز از اعتبار مانده باشد، گواهی را تمدید و سرور را ری‌استارت می‌کند. N پیش‌فرض ۳۰ روز است.
+
+پیش‌نیازها: رکورد DNS دامنه به IP عمومی سرور اشاره کند و پورت ۸۰ از اینترنت قابل دسترسی باشد (`ENABLE_STANDARD_PORTS`). اگر سرور متوقف باشد، مدیر خودش موقتاً روی پورت ۸۰ به چالش پاسخ می‌دهد. برخی مناطق به دلیل تحریم‌ها از Let's Encrypt گواهی نمی‌گیرند؛ در این حالت self-signed یا CA تجاری جایگزین است.
+
+## FFmpeg و تبدیل خودکار
+
+تبدیل FFmpeg دیگر در مسیر اجرای خودکار سرور نیست: فایل آپلودشده دست‌نخورده ذخیره و همان‌طور استریم می‌شود. برای فعال‌کردن آگاهانه‌ی ladder کیفیت، در `.env` مقدار `NEGAR_TRANSCODER_ENABLED=true` را قرار دهید. بدون آن، هیچ worker یا job تبدیلی هنگام استارت شروع نمی‌شود.
+
+## تغییر مسیر Storage و Database
+
+مسیرها از سه لایه هم‌زمان مدیریت می‌شوند تا تغییر واقعاً اعمال شود:
+
+1. تنظیمات مدیر در `%APPDATA%\20negar-manager\settings.json`
+2. فایل `.env` در ریشه‌ی repository که `server/config.ts` با `dotenv` می‌خواند
+3. environment متغیرهای فرآیند Node هنگام spawn
+
+فرآیند تغییر (از دکمه‌ی «Change destination…»):
+
+- اعتبارسنجی مسیر، دسترسی نوشتن و فضای آزاد
+- اگر سرور در حال اجراست، ابتدا متوقف می‌شود (تا SQLite و فایل‌های رسانه در نیمه‌ی کار تغییر نکنند)
+- ساخت ZIP بازیابی در پوشه‌ی backups
+- کپی اتمیک و تأیید SHA-256 برای هر فایل
+- بررسی `PRAGMA integrity_check` برای دیتابیس
+- نوشتن `NEGAR_DB_FILE_PATH` / `NEGAR_STORAGE_DIR` / `PORT` در `.env` با quoting ایمن ویندوزی
+- ذخیره‌ی تنظیمات، به‌روزرسانی environment و ری‌استارت اختیاری سرور
+- تأیید نهایی از طریق health و خطوط `[Config] Database file: …` / `[Config] Storage root: …` در لاگ
+
+حالت‌های انتقال دیتابیس:
+
+- **Replace**: دیتابیس فعلی به مقصد کپی می‌شود؛ اگر فایلی از قبل آنجا باشد با پسوند `.replaced-YYYYMMDD-HHMMSS` حفظ می‌شود.
+- **Adopt**: دیتابیس موجود در مقصد استفاده می‌شود (برای بازگرداندن یک نسخه).
+
+نکات مهم:
+
+- مسیر storage و فایل دیتابیس باید مستقل باشند؛ دیتابیس داخل پوشه‌ی رسانه پذیرفته نمی‌شود.
+- مقدارهای `.env` بدون کوتیشن نوشته می‌شوند و فقط در صورت وجود `#` یا فاصله‌ی اضافی، single-quote می‌گیرند؛ dotenv داخل double-quote کاراکترهایی مثل `\n` را تفسیر می‌کند و مسیر ویندوز را خراب می‌کند.
+- اتصال‌های SQLite مدیر بلافاصله بسته می‌شوند؛ در غیر این صورت ویندوز فایل را قفل می‌کند و rename اتمیک سرور با `EBUSY` شکست می‌خورد.
+
+### مسیرهای پیش‌فرض
+
+- داده‌های server: `data/` شامل `cineflow.sqlite`، `storage/`، `logs/` و `backups/`
+- تنظیمات manager: `%APPDATA%\20negar-manager\settings.json`
+- `.env` در ریشه‌ی repository (در gitignore است)
+
+## ساختار
+
+- `app/ui/theme.py` — توکن‌های طراحی و stylesheet سراسری
+- `app/ui/widgets.py` — کتابخانه‌ی کنترل‌های سفارشی (کارت، بج وضعیت، سوییچ، toast، console)
+- `app/ui/pages.py` — دوازده صفحه‌ی managerial و wizard تغییر مسیر
+- `app/core/update_manager.py` — بررسی و به‌روزرسانی امن از GitHub
+- `app/core/acme.py` / `app/core/cert_manager.py` — ACME v2 و مدیریت گواهی HTTPS
+- `app/ui/main_window.py` — shell، polling، state machine رابط کاربری، میان‌برها
+- `app/ui/tray.py` — یکپارچگی با system tray ویندوز
+- `app/core/bridge.py` — تنها نقطه‌ی اتصال منطق برنامه به UI
+- `app/core/database_manager.py` — validate/migrate با آزادسازی قفل فایل
 
 ## قرارداد اتصال
 
-فایل `app/core/bridge.py` تنها نقطه‌ی اتصال است. برای اتصال هسته، ماژول عمومی `app.core.config` (تابع اختیاری `get`) و ماژول عمومی سرویس (تابع‌های اختیاری `start`، `stop`، `restart`) کافی است.
+`app/core/bridge.py` تنها نقطه‌ی اتصال است. برای اتصال هسته، ماژول عمومی `app.core.config` (تابع اختیاری `get`) و ماژول عمومی سرویس (تابع‌های اختیاری `start`، `stop`، `restart`) کافی است.

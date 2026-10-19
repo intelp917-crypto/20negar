@@ -6,7 +6,18 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
-import { PORT, ENABLE_STANDARD_PORTS, HTTP_PORT, SECURE_PORT, CORS_ORIGINS } from './server/config.ts';
+import {
+  PORT,
+  ENABLE_STANDARD_PORTS,
+  HTTP_PORT,
+  SECURE_PORT,
+  CORS_ORIGINS,
+  DATA_DIR,
+  STORAGE_DIR,
+  DB_FILE_PATH,
+  TRANSCODER_ENABLED,
+  ACME_WEBROOT_DIR,
+} from './server/config.ts';
 import { ensureTlsMaterial } from './server/tls.ts';
 import { UpdateService } from './server/services/update.service.ts';
 import { db } from './server/db/database.ts';
@@ -80,6 +91,12 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+  // The desktop manager reads these lines back to prove which paths the JS
+  // server actually booted with, so a path change is verifiable end to end.
+  console.log(`[Config] Data directory: ${DATA_DIR}`);
+  console.log(`[Config] Storage root: ${STORAGE_DIR}`);
+  console.log(`[Config] Database file: ${DB_FILE_PATH}`);
+
   // Initialize Relational Database & Background Transcoder
   console.log('[Startup] Initializing Relational Database...');
   await db.initialize();
@@ -87,8 +104,14 @@ async function startServer() {
   await seedDatabase();
   console.log('[Startup] Relational Database initialized & migrations applied.');
 
-  // Start background worker
-  TranscoderService.startWorker();
+  // FFmpeg is never part of the automatic startup path. Uploaded files are kept
+  // byte-for-byte and streamed directly; a transcode job only runs when it was
+  // queued explicitly, or when the operator opted in with NEGAR_TRANSCODER_ENABLED.
+  if (TRANSCODER_ENABLED) {
+    TranscoderService.startWorker();
+  } else {
+    console.log('[Transcoder] Automatic FFmpeg processing is disabled (set NEGAR_TRANSCODER_ENABLED=true to enable).');
+  }
 
   // Start the Rust upload/download engine (non-fatal if it is unavailable).
   try {
@@ -99,6 +122,15 @@ async function startServer() {
   } catch (err: any) {
     console.warn('[Transfer] Engine startup error:', err?.message || err);
   }
+
+  // ACME HTTP-01 challenge files, published by the desktop manager when it
+  // requests or renews a Let's Encrypt certificate. The path is fixed by the
+  // ACME specification and holds nothing else.
+  app.use(
+    '/.well-known/acme-challenge',
+    express.static(path.join(ACME_WEBROOT_DIR, '.well-known', 'acme-challenge'),
+      { dotfiles: 'allow', index: false, fallthrough: false })
+  );
 
   // API Routes
   app.use('/api/auth', authRoutes);

@@ -28,8 +28,10 @@ class ProcessManager:
         merged_env = os.environ.copy(); merged_env.update(env or {})
         proc = self._popen(command, cwd=str(cwd) if cwd else None, env=merged_env, shell=False,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                           creationflags=creationflags, text=True, bufsize=1)
+                           creationflags=creationflags, text=True, bufsize=1, errors="replace")
         self._last_process = proc
+        # A restart creates a new process: its stream must be read again.
+        self._reader_started = False
         started = time.time()
         process_started = None
         if psutil:
@@ -38,14 +40,17 @@ class ProcessManager:
         return ProcessIdentity(proc.pid, tuple(command), started, process_started)
 
     def start_output_reader(self, callback) -> None:
-        """Read the merged stdout/stderr stream exactly once."""
+        """Read the merged stdout/stderr stream exactly once per process."""
         proc = self._last_process
         if not proc or not proc.stdout or self._reader_started: return
         self._reader_started = True
         def read():
             for line in iter(proc.stdout.readline, ""):
                 callback(line)
-            proc.stdout.close()
+            try:
+                proc.stdout.close()
+            except (OSError, ValueError):
+                pass
         threading.Thread(target=read, name="manager-process-output", daemon=True).start()
 
     def identity_matches(self, identity: ProcessIdentity) -> bool:
@@ -92,6 +97,7 @@ class ProcessManager:
             return {"running": True, "pid": identity.pid, "started_at": identity.started_at,
                     "cpu_percent": process.cpu_percent(interval=None) if process else 0,
                     "memory_bytes": process.memory_info().rss if process else 0,
+                    "memory_percent": process.memory_percent() if process else 0,
                     "cmdline": process.cmdline() if process else list(identity.command)}
         except (OSError, psutil.Error if psutil else OSError):
             return {"running": True, "pid": identity.pid, "started_at": identity.started_at}

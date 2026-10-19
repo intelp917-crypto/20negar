@@ -1,4 +1,12 @@
+# Runtime
 PySide6>=6.6
 psutil>=5.9
-pytest>=8.0
+# HTTPS certificates (Let's Encrypt / self-signed)
+cryptography>=41
+
+# Build: icon generation and PyInstaller image conversion
+Pillow>=10.0
 pyinstaller>=6.0
+
+# Tests
+pytest>=8.0

@@ -1,5 +1,4 @@
 from pathlib import Path
-import shutil
 import tempfile
 import zipfile
 import json
