@@ -1,6 +1,7 @@
 import hashlib
 import shutil
 import subprocess
+from pathlib import Path
 from app.core.backup_manager import BackupManager
 from app.core.database_manager import DatabaseManager
 from app.core.storage_manager import StorageManager
@@ -50,6 +51,30 @@ def test_startup_entry_runs_from_repo_with_env_and_log(tmp_path):
                               cwd=tmp_path / "moved").current()
 
 
+def test_hidden_startup_entry_has_no_console(tmp_path):
+    startup = StartupManager("20Negar-Server", ["node", "server.ts"], tmp_path / "Startup",
+                             cwd=tmp_path, hidden=True, script_dir=tmp_path / "scripts",
+                             log_file=tmp_path / "logs" / "startup-server.log")
+    path = startup.enable(overwrite=True)
+    assert path.suffix == ".vbs" and path.exists()
+    assert startup.script_path.exists()
+    launcher = path.read_text(encoding="utf-16")
+    assert str(startup.script_path) in launcher
+    assert '", 0, False' in launcher          # hidden window, do not block sign-in
+    assert "pause" not in startup.script_path.read_text(encoding="utf-8")
+    assert startup.current()
+
+    # A leftover visible entry must not start a second, windowed server.
+    legacy = tmp_path / "Startup" / "20Negar-Server.cmd"
+    legacy.write_text("@echo off\n", encoding="utf-8")
+    assert not startup.current()
+    startup.enable(overwrite=True)
+    assert not legacy.exists() and startup.current()
+
+    startup.disable()
+    assert not path.exists() and not startup.script_path.exists()
+
+
 def test_bridge_startup_repairs_a_stale_entry(tmp_path, monkeypatch):
     if not shutil.which("node"):
         return
@@ -58,12 +83,16 @@ def test_bridge_startup_repairs_a_stale_entry(tmp_path, monkeypatch):
     bridge = CoreBridge(paths)
     startup_dir = tmp_path / "appdata" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
     startup_dir.mkdir(parents=True)
-    entry = startup_dir / "20Negar-Server.cmd"
-    entry.write_text("@echo off\ncd /d C:\\old-checkout\nnode server.ts\n", encoding="utf-8")
+    stale = startup_dir / "20Negar-Server.cmd"
+    stale.write_text("@echo off\ncd /d C:\\old-checkout\nnode server.ts\n", encoding="utf-8")
     status = bridge.startup_status()
     assert not status["server_current"]
     assert bridge.startup(True, True)["server_current"]
-    text = entry.read_text(encoding="utf-8")
+    entry = startup_dir / "20Negar-Server.vbs"
+    assert entry.exists() and not stale.exists()
+    script = Path(status["server_script"])
+    assert script.exists()
+    text = script.read_text(encoding="utf-8")
     assert f"cd /d {subprocess.list2cmdline([str(tmp_path)])}" in text
     assert "C:\\old-checkout" not in text
     assert bridge.startup_status()["server_current"]

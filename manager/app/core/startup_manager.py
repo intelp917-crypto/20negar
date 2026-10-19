@@ -9,24 +9,47 @@ class StartupManager:
     Windows starts a ``.cmd`` there with the user's profile as the working
     directory, not the repository. Without an explicit ``cd`` the server cannot
     find ``server.ts`` and dotenv never reads the repository ``.env``, so the
-    entry silently starts nothing useful. The generated file therefore records
-    the working directory, the managed environment and a log destination.
+    entry silently starts nothing useful.
+
+    A console entry also leaves a visible window on screen for as long as the
+    server runs. When ``hidden`` is set, the Startup folder receives a tiny
+    ``.vbs`` launcher instead: WScript starts the real ``.cmd`` with window style
+    0, so cmd and every child process (Node, tsx) stay invisible while the log
+    file still records what happened.
     """
 
     def __init__(self, app_name: str, command: list[str], startup_dir: Path | None = None,
                  cwd: Path | str | None = None, env: dict[str, str] | None = None,
-                 log_file: Path | str | None = None):
+                 log_file: Path | str | None = None, hidden: bool = False,
+                 script_dir: Path | str | None = None):
         self.app_name, self.command = app_name, list(command)
         self.startup_dir = Path(startup_dir) if startup_dir else \
             Path(os.environ.get("APPDATA", Path.home())) / "Microsoft/Windows/Start Menu/Programs/Startup"
         self.cwd = Path(cwd).resolve() if cwd else None
         self.env = dict(env or {})
+        self.hidden = hidden
+        self.script_dir = Path(script_dir) if script_dir else (
+            Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+            / "20negar-manager" / "startup")
         self.log_file = Path(log_file) if log_file else self.shortcut_path.with_suffix(".log")
 
+    # -- paths -------------------------------------------------------------
     @property
     def shortcut_path(self) -> Path:
+        """The file Windows itself runs at sign-in."""
+        return self.startup_dir / f"{self.app_name}{'.vbs' if self.hidden else '.cmd'}"
+
+    @property
+    def script_path(self) -> Path:
+        """The batch file that carries the working directory, env and log."""
+        return self.script_dir / f"{self.app_name}.cmd" if self.hidden else self.shortcut_path
+
+    @property
+    def legacy_path(self) -> Path:
+        """The old visible ``.cmd`` entry, removed so it cannot start twice."""
         return self.startup_dir / f"{self.app_name}.cmd"
 
+    # -- content -----------------------------------------------------------
     def working_dir(self) -> Path:
         if self.cwd:
             return self.cwd
@@ -58,23 +81,52 @@ class StartupManager:
         lines.append("if errorlevel 1 (")
         lines.append(f"  echo [20Negar] Startup failed. Log: {self.log_file}")
         lines.append("  type " + log)
-        lines.append("  pause")
+        # A hidden window must never wait for a key that nobody can see.
+        if not self.hidden:
+            lines.append("  pause")
         lines.append(")")
         lines.append("endlocal")
         return "\r\n".join(lines) + "\r\n"
 
+    def launcher(self) -> str:
+        # 0 = hidden window, False = do not wait for the server to finish.
+        return ("Set shell = CreateObject(\"WScript.Shell\")\r\n"
+                f'shell.Run """{self.script_path}""", 0, False\r\n')
+
+    @staticmethod
+    def _read(path: Path) -> str:
+        for encoding in ("utf-8", "utf-16"):
+            try:
+                return path.read_text(encoding=encoding)
+            except (UnicodeError, OSError):
+                continue
+        return ""
+
+    @staticmethod
+    def _write(path: Path, text: str, encoding: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_text(text, encoding=encoding, newline="")
+        os.replace(temp, path)
+
+    # -- lifecycle ---------------------------------------------------------
     def enable(self, overwrite: bool = False) -> Path:
         self.startup_dir.mkdir(parents=True, exist_ok=True)
         if self.shortcut_path.exists() and not overwrite:
             return self.shortcut_path
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.shortcut_path.with_suffix(".tmp")
-        temp.write_text(self.content(), encoding="utf-8", newline="")
-        os.replace(temp, self.shortcut_path)
+        self._write(self.script_path, self.content(), "utf-8")
+        if self.hidden:
+            # WScript reads Unicode script files, so a Persian install path survives.
+            self._write(self.shortcut_path, self.launcher(), "utf-16")
+            self.legacy_path.unlink(missing_ok=True)
         return self.shortcut_path
 
     def disable(self) -> None:
         self.shortcut_path.unlink(missing_ok=True)
+        self.legacy_path.unlink(missing_ok=True)
+        if self.hidden:
+            self.script_path.unlink(missing_ok=True)
 
     def enabled(self) -> bool:
         return self.shortcut_path.exists()
@@ -83,10 +135,12 @@ class StartupManager:
         """True when the entry exists and already points at this working directory."""
         if not self.shortcut_path.exists():
             return False
-        try:
-            text = self.shortcut_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return False
+        if self.hidden:
+            if self.legacy_path.exists() or not self.script_path.exists():
+                return False
+            if str(self.script_path) not in self._read(self.shortcut_path):
+                return False
+        text = self._read(self.script_path)
         expected = subprocess.list2cmdline([str(self.working_dir())])
         return f"cd /d {expected}" in text
 

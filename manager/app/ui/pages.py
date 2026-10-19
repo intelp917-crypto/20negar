@@ -1108,6 +1108,7 @@ class StartupPage(Page):
         card.add(self.manager)
         card.add(KeyValue("Startup folder", status["directory"]))
         card.add(KeyValue("Server entry", status["server_path"]))
+        card.add(KeyValue("Server script", status.get("server_script") or "—"))
         card.add(KeyValue("Server working folder", status["repo_root"]))
         card.add(KeyValue("Server log", status["server_log"]))
         self.command = KeyValue("Server command", status.get("server_command") or "—")
@@ -1130,7 +1131,8 @@ class StartupPage(Page):
         note.add(_bullet("The server entry starts the same Node command the manager uses."))
         note.add(_bullet("It runs from the repository root, so server.ts and .env are found at sign-in."))
         note.add(_bullet("Applying rewrites both entries; stale paths from a moved checkout are repaired."))
-        note.add(_bullet("Sign-in output goes to the server log file instead of a window that closes instantly."))
+        note.add(_bullet("At sign-in the entry runs hidden: no cmd or node window is left on screen."))
+        note.add(_bullet("Output still goes to the server log, so a failed start can be diagnosed."))
         self.layout.addWidget(note)
         self.on_state({})
 

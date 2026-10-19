@@ -867,11 +867,15 @@ class CoreBridge:
         manager_command = ([sys.executable] if getattr(sys, "frozen", False)
                            else [sys.executable, str(self.paths.repo_root / "manager" / "main.py")])
         server_command = ServerController.command_for_repo(self.paths.repo_root, self.settings["mode"])
+        scripts = self.paths.config_dir / "startup"
+        # hidden=True: at sign-in WScript starts the batch file with no console
+        # window, so no node.exe/cmd window is left on screen.
         manager = StartupManager("20Negar-Manager", manager_command, startup_dir,
-                                 cwd=self.paths.repo_root)
+                                 cwd=self.paths.repo_root, hidden=True, script_dir=scripts)
         server = StartupManager("20Negar-Server", server_command, startup_dir,
                                 cwd=self.paths.repo_root, env=self._server_env(),
-                                log_file=self.paths.logs_dir / "startup-server.log")
+                                log_file=self.paths.logs_dir / "startup-server.log",
+                                hidden=True, script_dir=scripts)
         return manager, server
 
     def startup_dir(self) -> Path:
@@ -900,6 +904,7 @@ class CoreBridge:
         return {"manager": manager.enabled(), "server": server.enabled(),
                 "directory": str(manager.startup_dir), "manager_path": str(manager.shortcut_path),
                 "server_path": str(server.shortcut_path), "server_log": str(server.log_file),
+                "server_script": str(server.script_path),
                 "server_current": server.current(), "server_command": server.command_line(),
                 "repo_root": str(self.paths.repo_root)}
 

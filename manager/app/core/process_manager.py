@@ -24,7 +24,12 @@ class ProcessManager:
         self._popen = popen_factory; self._last_process = None; self._reader_started = False
 
     def start(self, command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> ProcessIdentity:
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+        # CREATE_NO_WINDOW keeps the Node console invisible when the manager itself
+        # is a GUI build, while the merged output pipe still carries every line.
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                             | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
         merged_env = os.environ.copy(); merged_env.update(env or {})
         proc = self._popen(command, cwd=str(cwd) if cwd else None, env=merged_env, shell=False,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
