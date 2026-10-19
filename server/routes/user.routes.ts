@@ -3,7 +3,7 @@ import { AuthService } from '../services/auth.service.ts';
 import { AuditService } from '../services/audit.service.ts';
 import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
 import { db } from '../db/database.ts';
-import { STORAGE_DIR } from '../config.ts';
+import { PRIVATE_VIDEOS_DIR, STORAGE_DIR, VIDEOS_RELOCATED } from '../config.ts';
 import { UpdateService } from '../services/update.service.ts';
 import fs from 'fs';
 import { canCreateRole } from '../authorization/policy.ts';
@@ -189,6 +189,10 @@ router.get('/system/stats', authenticate, requireRole(['SuperAdmin', 'Admin']), 
       }
     };
     calcFolderSize(STORAGE_DIR);
+    // Videos can live on a different disk (NEGAR_VIDEOS_DIR); count them once.
+    if (VIDEOS_RELOCATED) {
+      calcFolderSize(PRIVATE_VIDEOS_DIR);
+    }
 
     const videoCount = (db.queryOne<any>('SELECT COUNT(*) as c FROM videos')?.c as number) || 0;
     const userCount = (db.queryOne<any>('SELECT COUNT(*) as c FROM users')?.c as number) || 0;

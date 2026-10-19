@@ -21,6 +21,8 @@ DEFAULT_SETTINGS = {
     "window_geometry": "",
     # Effective server paths. Empty means "server default" (repo/data).
     "storage_dir": "",
+    # Videos may live on another disk; empty keeps them in <storage_dir>/videos.
+    "videos_dir": "",
     "database": "",
     # Last server identity, used to re-attach to a process started earlier.
     "server_pid": 0,
@@ -66,7 +68,7 @@ def validate_settings(values: dict) -> dict:
     result["ui_theme"] = result["ui_theme"] if result["ui_theme"] in {"dark", "light"} else "dark"
     for key in _BOOL_KEYS:
         result[key] = result[key] if isinstance(result[key], bool) else DEFAULT_SETTINGS[key]
-    for key in ("storage_dir", "database", "tls_domain", "tls_email"):
+    for key in ("storage_dir", "videos_dir", "database", "tls_domain", "tls_email"):
         value = str(result.get(key) or "").strip()
         result[key] = value
     try:

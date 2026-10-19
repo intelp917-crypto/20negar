@@ -100,9 +100,19 @@ npm run lint
 - ساخت ZIP بازیابی در پوشه‌ی backups
 - کپی اتمیک و تأیید SHA-256 برای هر فایل
 - بررسی `PRAGMA integrity_check` برای دیتابیس
-- نوشتن `NEGAR_DB_FILE_PATH` / `NEGAR_STORAGE_DIR` / `PORT` در `.env` با quoting ایمن ویندوزی
+- نوشتن `NEGAR_DB_FILE_PATH` / `NEGAR_STORAGE_DIR` / `NEGAR_VIDEOS_DIR` / `PORT` در `.env` با quoting ایمن ویندوزی
 - ذخیره‌ی تنظیمات، به‌روزرسانی environment و ری‌استارت اختیاری سرور
-- تأیید نهایی از طریق health و خطوط `[Config] Database file: …` / `[Config] Storage root: …` در لاگ
+- تأیید نهایی از طریق health و خطوط `[Config] Database file: …` / `[Config] Storage root: …` / `[Config] Videos root: …` در لاگ
+
+### پوشه‌ی ویدیوها روی درایو دیگر
+
+کارت **Videos destination** در صفحه‌ی Storage مسیر `data/storage/videos` را به هر درایو یا پوشه‌ی دیگری منتقل می‌کند (`NEGAR_VIDEOS_DIR`):
+
+- کلید رکوردها در دیتابیس همان `videos/<file>` می‌ماند؛ فقط ریشه‌ی فیزیکی عوض می‌شود، پس ویدیوهای قبلی بدون تغییر دیتابیس پیدا می‌شوند.
+- پوشه باید بیرون از storage root باشد؛ بنابراین تغییر بعدی storage نمی‌تواند آن را رها یا تکراری کند.
+- با گزینه‌ی کپی، همه‌ی فایل‌ها با بررسی size + SHA-256 منتقل می‌شوند و پوشه‌ی قبلی دست‌نخورده می‌ماند.
+- «Use storage default» مقدار را پاک می‌کند تا ویدیوها دوباره داخل `<storage>/videos` ذخیره شوند.
+- بکاپ رسانه‌ای و آمار فضای مصرفی، پوشه‌ی جداگانه را هم شامل می‌شوند. موتور Rust در این حالت فقط برای دانلود/استریم ویدیوها به fallback داخلی Node می‌رود (آپلودها تغییری نمی‌کنند).
 
 حالت‌های انتقال دیتابیس:
 
@@ -118,6 +128,7 @@ npm run lint
 ### مسیرهای پیش‌فرض
 
 - داده‌های server: `data/` شامل `cineflow.sqlite`، `storage/`، `logs/` و `backups/`
+- ویدیوها: `<storage>/videos` مگر اینکه `videos_dir` در تنظیمات مدیر تنظیم شده باشد
 - تنظیمات manager: `%APPDATA%\20negar-manager\settings.json`
 - `.env` در ریشه‌ی repository (در gitignore است)
 

@@ -388,6 +388,8 @@ class MainWindow(QMainWindow):
             self.bridge_validate_database()
         elif action == "validate_storage":
             self.run(self.bridge.storage_info, self._storage_checked, self._failure)
+        elif action == "reset_videos":
+            self._reset_videos()
         elif action == "backup":
             self._create_backup()
         elif action == "restore":
@@ -438,8 +440,10 @@ class MainWindow(QMainWindow):
 
     # -- storage / database ---------------------------------------------
     def _open_wizard(self, kind: str) -> None:
-        page = self.page_by_name["Storage" if kind == "storage" else "Database"]
-        current = page.path_field.text()
+        page = self.page_by_name["Database" if kind == "database" else "Storage"]
+        current = (page.path_field.text() if kind == "database"
+                   else page.videos_field.text() if kind == "videos"
+                   else page.path_field.text())
         wizard = PathWizard(self, self.bridge, kind, current)
         wizard.confirmed.connect(self._apply_path)
         wizard.exec()
@@ -452,6 +456,9 @@ class MainWindow(QMainWindow):
             if kind == "storage":
                 return self.bridge.apply_storage_path(
                     options["path"], bool(options.get("migrate")), bool(options.get("restart", True)))
+            if kind == "videos":
+                return self.bridge.apply_videos_path(
+                    options["path"], bool(options.get("migrate")), bool(options.get("restart", True)))
             return self.bridge.apply_database_path(
                 options["path"], str(options.get("mode", "replace")), bool(options.get("restart", True)))
 
@@ -459,9 +466,12 @@ class MainWindow(QMainWindow):
             self._end_progress()
             if not result.get("changed"):
                 self.toast("The destination is unchanged.", "info")
-            elif kind == "storage":
+            elif kind in {"storage", "videos"}:
                 extra = f" · {result.get('copied_files', 0)} files verified" if result.get("migrated") else ""
-                self.toast(f"Storage destination updated{extra}", "success")
+                label = "Videos folder" if kind == "videos" else "Storage destination"
+                self.toast(f"{label} updated{extra}", "success")
+                if result.get("verified") is False:
+                    self.toast("Restart the server to confirm the new path", "warning")
             elif result.get("verified"):
                 self.toast("Database moved — the server is using the new file", "success")
             elif result.get("restarted"):
@@ -471,7 +481,7 @@ class MainWindow(QMainWindow):
                 self.toast("Database moved — restart the server to apply", "success")
             self.refresh_state(force=True)
             self.refresh_backups()
-            self.navigate("Storage" if kind == "storage" else "Database")
+            self.navigate("Database" if kind == "database" else "Storage")
 
         def failed(message: str) -> None:
             self._end_progress()
@@ -486,6 +496,26 @@ class MainWindow(QMainWindow):
                        else "Database integrity check failed", "success" if result.get("valid") else "error")
             self.refresh_state(force=True)
         self.run(self.bridge.validate_database, done, self._failure)
+
+    def _reset_videos(self) -> None:
+        if not self.bridge.settings.get("videos_dir"):
+            self.toast("Videos already use the storage folder", "info")
+            return
+        self._progress = self._begin_progress("Resetting videos folder",
+                                             "Switching back to <storage>/videos…")
+
+        def done(result: dict) -> None:
+            self._end_progress()
+            if not result.get("changed"):
+                self.toast("The videos folder is unchanged.", "info")
+            else:
+                self.toast("Videos now use the storage folder — restart the server to apply"
+                           if not result.get("restarted") else
+                           "Videos now use the storage folder", "success")
+            self.refresh_state(force=True)
+            self.navigate("Storage")
+
+        self.run(self.bridge.reset_videos_path, done, self._failure)
 
     def _storage_checked(self, info: dict) -> None:
         if info.get("exists"):
@@ -993,6 +1023,7 @@ class MainWindow(QMainWindow):
     def _open_path(self, name: str) -> None:
         mapping = {
             "storage": self.bridge.paths.storage_dir,
+            "videos": self.bridge.videos_dir,
             "database": self.bridge.paths.database.parent,
             "backups": self.bridge.paths.backups_dir,
             "config": self.bridge.store.path.parent,

@@ -1,15 +1,24 @@
 import fs from 'fs';
 import path from 'path';
 import { IFileStorage, FileStats } from './storage.interface.ts';
-import { STORAGE_DIR } from '../config.ts';
+import { PRIVATE_VIDEOS_DIR, STORAGE_DIR } from '../config.ts';
 
+/**
+ * Keys are stored as `videos/<file>` even when the video folder lives on
+ * another disk, so the `videos/` prefix is resolved against `videosDir`
+ * instead of the general storage root. Every other key stays under the root.
+ */
 export class LocalFileStorage implements IFileStorage {
   private baseDir: string;
+  private videosDir: string;
 
-  constructor(baseDir: string = STORAGE_DIR) {
+  constructor(baseDir: string = STORAGE_DIR, videosDir: string = '') {
     this.baseDir = path.resolve(baseDir);
-    if (!fs.existsSync(this.baseDir)) {
-      fs.mkdirSync(this.baseDir, { recursive: true });
+    this.videosDir = path.resolve(videosDir || path.join(this.baseDir, 'videos'));
+    for (const dir of new Set([this.baseDir, this.videosDir])) {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
     }
   }
 
@@ -18,8 +27,16 @@ export class LocalFileStorage implements IFileStorage {
       throw new Error('Storage key must be a non-empty relative path.');
     }
 
-    const resolved = path.resolve(this.baseDir, fileKey);
-    const relative = path.relative(this.baseDir, resolved);
+    const normalised = fileKey.replace(/\\/g, '/');
+    const segments = normalised.split('/').filter((segment) => segment && segment !== '.');
+    const root = segments[0] === 'videos' ? this.videosDir : this.baseDir;
+    const key = segments[0] === 'videos' ? segments.slice(1).join('/') : normalised;
+    if (!key) {
+      throw new Error('Storage key must point at a file, not a folder.');
+    }
+
+    const resolved = path.resolve(root, key);
+    const relative = path.relative(root, resolved);
     if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error('Storage key escapes the configured storage root.');
     }
@@ -91,4 +108,4 @@ export class LocalFileStorage implements IFileStorage {
   }
 }
 
-export const fileStorage = new LocalFileStorage();
+export const fileStorage = new LocalFileStorage(STORAGE_DIR, PRIVATE_VIDEOS_DIR);

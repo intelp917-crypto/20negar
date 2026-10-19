@@ -35,6 +35,12 @@ export const STORAGE_DIR = path.resolve(configuredStorageDir || path.join(DATA_D
 export const PRIVATE_VIDEOS_DIR = path.resolve(process.env.NEGAR_VIDEOS_DIR || path.join(STORAGE_DIR, 'videos'));
 export const PRIVATE_THUMBNAILS_DIR = path.resolve(process.env.NEGAR_THUMBNAILS_DIR || path.join(STORAGE_DIR, 'thumbnails'));
 export const PRIVATE_HLS_DIR = path.resolve(process.env.NEGAR_HLS_DIR || path.join(STORAGE_DIR, 'hls'));
+/** True when the videos folder was pointed outside `<storage>/videos`. */
+export const VIDEOS_RELOCATED = (() => {
+  const normalise = (value: string) =>
+    process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+  return normalise(PRIVATE_VIDEOS_DIR) !== normalise(path.join(STORAGE_DIR, 'videos'));
+})();
 export const DB_FILE_PATH = path.resolve(process.env.NEGAR_DB_FILE_PATH || path.join(DATA_DIR, 'cineflow.sqlite'));
 export const SSL_DIR = path.resolve(process.env.NEGAR_SSL_DIR || path.join(DATA_DIR, 'certs'));
 /** Web root the server publishes for ACME HTTP-01 challenges (Let's Encrypt). */

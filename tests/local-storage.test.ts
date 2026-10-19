@@ -45,6 +45,23 @@ test('LocalFileStorage permits nested keys inside the configured root', async ()
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('LocalFileStorage routes videos keys to the configured videos root', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), '20negar-storage-'));
+  const videos = fs.mkdtempSync(path.join(os.tmpdir(), '20negar-videos-'));
+  const storage = new LocalFileStorage(root, videos);
+
+  await storage.saveFile('videos/example.bin', Buffer.from('relocated'));
+  assert.equal(fs.readFileSync(path.join(videos, 'example.bin'), 'utf8'), 'relocated');
+  assert.equal(fs.existsSync(path.join(root, 'videos', 'example.bin')), false);
+  await storage.saveFile('thumbnails/thumb.jpg', Buffer.from('thumb'));
+  assert.equal(fs.readFileSync(path.join(root, 'thumbnails', 'thumb.jpg'), 'utf8'), 'thumb');
+  assert.equal(storage.getPhysicalPath('videos\\nested\\clip.mp4'), path.join(videos, 'nested', 'clip.mp4'));
+  assert.throws(() => storage.getPhysicalPath('videos/../../escape.mp4'), /escapes/);
+
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(videos, { recursive: true, force: true });
+});
+
 test('chunked completion verifies and persists a matching SHA-256 checksum', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), '20negar-upload-'));
   const filePath = path.join(root, 'payload.bin');

@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
-import { DATA_DIR, STORAGE_DIR, JWT_SECRET } from '../config.ts';
+import { DATA_DIR, PRIVATE_VIDEOS_DIR, STORAGE_DIR, JWT_SECRET, VIDEOS_RELOCATED } from '../config.ts';
 
 /**
  * Bridge to the Rust transfer engine (`negartransfer`).
@@ -24,6 +24,12 @@ const ENGINE_HOST = process.env.NEGAR_TRANSFER_HOST || '127.0.0.1';
 const TRANSFER_SECRET = process.env.NEGAR_TRANSFER_SECRET || JWT_SECRET;
 const ENABLED = (process.env.NEGAR_TRANSFER_ENABLED || 'true').toLowerCase() !== 'false';
 
+/**
+ * The Rust engine resolves every key under NEGAR_STORAGE_DIR. When the videos
+ * folder was moved to another disk (NEGAR_VIDEOS_DIR) it cannot find
+ * `videos/...` files, so those reads stay on the Node implementation instead of
+ * paying a failed round-trip. Uploads/chunks are unaffected.
+ */
 let engineProcess: ChildProcess | null = null;
 let engineReady = false;
 let engineStarting: Promise<boolean> | null = null;
@@ -106,6 +112,7 @@ export async function ensureTransferEngine(): Promise<boolean> {
         JWT_SECRET,
         NEGAR_DATA_DIR: DATA_DIR,
         NEGAR_STORAGE_DIR: STORAGE_DIR,
+        NEGAR_VIDEOS_DIR: PRIVATE_VIDEOS_DIR,
         NEGAR_CHUNK_DIR: path.resolve(STORAGE_DIR, 'temp', 'chunked'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -223,6 +230,10 @@ export function streamFromTransferEngine(
 ): Promise<boolean> {
   return new Promise((resolve) => {
     if (!engineReady) {
+      resolve(false);
+      return;
+    }
+    if (VIDEOS_RELOCATED && storageKey.replace(/\\/g, '/').startsWith('videos/')) {
       resolve(false);
       return;
     }

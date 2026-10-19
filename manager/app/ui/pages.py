@@ -429,6 +429,29 @@ class StoragePage(Page):
         destination.add_layout(actions)
         self.layout.addWidget(destination)
 
+        videos = Card("Videos destination",
+                      "Uploaded originals and their renditions. Can live on another drive.")
+        self.videos_field = PathField(str(self.bridge.videos_dir))
+        videos.add(self.videos_field)
+        video_chips = QHBoxLayout()
+        video_chips.setSpacing(8)
+        self.videos_exist = Chip("checking…")
+        self.videos_size = Chip("—")
+        video_chips.addWidget(self.videos_exist)
+        video_chips.addWidget(self.videos_size)
+        video_chips.addStretch(1)
+        videos.add_layout(video_chips)
+        video_actions = QHBoxLayout()
+        video_actions.setSpacing(8)
+        video_actions.addWidget(self.button("Change videos folder…", "path_wizard", "videos", variant="primary"))
+        video_actions.addWidget(self.button("Open folder", "open_path", "videos", variant="ghost"))
+        video_actions.addWidget(self.button("Use storage default", "reset_videos", variant="ghost"))
+        video_actions.addStretch(1)
+        videos.add_layout(video_actions)
+        videos.add(_bullet("Database rows keep the key videos/<file>; only the physical folder changes."))
+        videos.add(_bullet("The folder must be outside the media storage root, so a storage move cannot orphan it."))
+        self.layout.addWidget(videos)
+
         runtime = Card("Runtime configuration",
                        "The manager writes these values to .env and passes them to the server.")
         self.env_storage = KeyValue("NEGAR_STORAGE_DIR (.env)", "—")
@@ -437,6 +460,12 @@ class StoragePage(Page):
         runtime.add(self.env_storage)
         runtime.add(self.active_storage)
         runtime.add_layout(self._chip_row(self.storage_match))
+        self.env_videos = KeyValue("NEGAR_VIDEOS_DIR (.env)", "—")
+        self.active_videos = KeyValue("Videos root reported by server", "—")
+        self.videos_match = Chip("not verified")
+        runtime.add(self.env_videos)
+        runtime.add(self.active_videos)
+        runtime.add_layout(self._chip_row(self.videos_match))
         runtime.add_action(self.button("Sync config", "sync_env", variant="ghost", compact=True))
         runtime.add_action(self.button("Restart to apply", "restart", compact=True))
         self.layout.addWidget(runtime)
@@ -479,6 +508,23 @@ class StoragePage(Page):
                                          "success" if same_path(active, path) else "warning")
         else:
             self.storage_match.set_state("not verified", "muted")
+
+        videos = state.get("videos") or ""
+        if videos:
+            self.videos_field.set_path(videos)
+        videos_exists = Path(videos).exists() if videos else False
+        self.videos_exist.set_state("exists" if videos_exists else "missing",
+                                    "success" if videos_exists else "danger")
+        self.videos_size.set_state(f"{human_size(state.get('videos_size', 0))} videos", "muted")
+        self.env_videos.set(env.get("NEGAR_VIDEOS_DIR") or "not set — storage/videos")
+        active_videos = runtime.get("videos")
+        self.active_videos.set(active_videos or "not reported yet")
+        if active_videos and videos:
+            synced = same_path(active_videos, videos)
+            self.videos_match.set_state("synced" if synced else "restart needed",
+                                        "success" if synced else "warning")
+        else:
+            self.videos_match.set_state("not verified", "muted")
 
 
 # ---------------------------------------------------------------------------
@@ -1134,7 +1180,11 @@ class PathWizard(QDialog):
     def __init__(self, parent, bridge, kind: str, current: str):
         super().__init__(parent)
         self.kind, self.bridge, self.current = kind, bridge, current
-        self.setWindowTitle("Change storage destination" if kind == "storage" else "Change database file")
+        self.is_folder = kind in {"storage", "videos"}
+        titles = {"storage": "Change storage destination",
+                  "videos": "Change videos destination",
+                  "database": "Change database file"}
+        self.setWindowTitle(titles.get(kind, "Change destination"))
         self.setMinimumSize(660, 540)
         self.setObjectName("Root")
         self.stack = QStackedWidget()
@@ -1143,8 +1193,11 @@ class PathWizard(QDialog):
 
         header = QVBoxLayout()
         header.setSpacing(4)
-        self.section = eyebrow("Storage" if kind == "storage" else "Database")
-        title = QLabel("Choose a new destination" if kind == "storage" else "Choose a new database file")
+        self.section = eyebrow({"storage": "Storage", "videos": "Videos",
+                                "database": "Database"}.get(kind, "Storage"))
+        title = QLabel("Choose a new database file" if kind == "database"
+                       else "Choose a new videos folder" if kind == "videos"
+                       else "Choose a new destination")
         title.setObjectName("PageTitle")
         subtitle = QLabel("Nothing changes until you review and confirm the plan.")
         subtitle.setObjectName("PageSubtitle")
@@ -1203,9 +1256,11 @@ class PathWizard(QDialog):
         two = QVBoxLayout(step_two)
         two.setContentsMargins(0, 8, 0, 0)
         two.setSpacing(12)
-        options = Card("How should this be applied?" if kind == "storage" else "Which database should be used?")
-        if kind == "storage":
-            self.copy_media = Switch("Copy existing media to the new destination")
+        options = Card("How should this be applied?" if self.is_folder
+                       else "Which database should be used?")
+        if self.is_folder:
+            self.copy_media = Switch("Copy existing videos to the new folder" if kind == "videos"
+                                     else "Copy existing media to the new destination")
             self.copy_media.setChecked(True)
             options.add(self.copy_media)
             options.add(_bullet("Copies are verified by size and SHA-256 before the switch."))
@@ -1274,8 +1329,9 @@ class PathWizard(QDialog):
 
     def _browse(self) -> None:
         start = self.path.text() or self.current
-        if self.kind == "storage":
-            selected = QFileDialog.getExistingDirectory(self, "Choose media destination", start)
+        if self.is_folder:
+            label = "Choose videos folder" if self.kind == "videos" else "Choose media destination"
+            selected = QFileDialog.getExistingDirectory(self, label, start)
         else:
             selected = QFileDialog.getSaveFileName(
                 self, "Choose database file", start, "SQLite database (*.sqlite *.db);;All files (*)")[0]
@@ -1291,7 +1347,7 @@ class PathWizard(QDialog):
             return False
         try:
             target = self._resolved()
-            parent = target if self.kind == "storage" else target.parent
+            parent = target if self.is_folder else target.parent
             parent.mkdir(parents=True, exist_ok=True)
             usage = shutil.disk_usage(parent)
             writable = os.access(parent, os.W_OK)
@@ -1337,7 +1393,7 @@ class PathWizard(QDialog):
 
     def options(self) -> dict:
         target = self._resolved()
-        if self.kind == "storage":
+        if self.is_folder:
             return {"path": str(target), "migrate": self.copy_media.isChecked(),
                     "restart": self.restart.isChecked()}
         return {"path": str(target), "mode": "replace" if self.mode.index() == 0 else "adopt",
@@ -1347,8 +1403,8 @@ class PathWizard(QDialog):
         t = theme.current()
         options = self.options()
         current = self.current
-        if self.kind == "storage":
-            operation = "Copy existing media, then switch" if options["migrate"] else "Switch destination only"
+        if self.is_folder:
+            operation = "Copy existing files, then switch" if options["migrate"] else "Switch destination only"
         else:
             operation = ("Replace with the current database" if options["mode"] == "replace"
                          else "Adopt the database already at the destination")

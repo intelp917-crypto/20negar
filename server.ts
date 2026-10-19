@@ -14,6 +14,7 @@ import {
   CORS_ORIGINS,
   DATA_DIR,
   STORAGE_DIR,
+  PRIVATE_VIDEOS_DIR,
   DB_FILE_PATH,
   TRANSCODER_ENABLED,
   ACME_WEBROOT_DIR,
@@ -95,6 +96,7 @@ async function startServer() {
   // server actually booted with, so a path change is verifiable end to end.
   console.log(`[Config] Data directory: ${DATA_DIR}`);
   console.log(`[Config] Storage root: ${STORAGE_DIR}`);
+  console.log(`[Config] Videos root: ${PRIVATE_VIDEOS_DIR}`);
   console.log(`[Config] Database file: ${DB_FILE_PATH}`);
 
   // Initialize Relational Database & Background Transcoder

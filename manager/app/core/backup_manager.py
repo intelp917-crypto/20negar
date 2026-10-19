@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import tempfile
 import zipfile
 import json
@@ -7,7 +8,14 @@ from datetime import datetime, timezone
 
 class BackupManager:
     def __init__(self, backup_dir: Path): self.backup_dir = Path(backup_dir)
-    def create(self, sources: list[Path], destination: Path | None = None) -> Path:
+    def create(self, sources: list[Path], destination: Path | None = None,
+               exclude: list[Path] | None = None) -> Path:
+        """Zip `sources`; `exclude` drops stale subtrees (for example the old
+        videos folder a switched installation keeps on disk)."""
+        excluded = [os.path.normcase(str(Path(item).resolve())) for item in (exclude or [])]
+        def skipped(file: Path) -> bool:
+            name = os.path.normcase(str(Path(file).resolve()))
+            return any(name == item or name.startswith(item + os.sep) for item in excluded)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         destination = destination or self.backup_dir / "backup.zip"
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +30,7 @@ class BackupManager:
                         archive.write(source, source.name); manifest["files"].append({"name": source.name, "size": source.stat().st_size, "sha256": hashlib.sha256(source.read_bytes()).hexdigest()})
                     elif source.is_dir():
                         for file in source.rglob("*"):
-                            if file.is_file():
+                            if file.is_file() and not skipped(file):
                                  name = str(file.relative_to(source.parent)).replace("\\", "/")
                                  digest = hashlib.sha256(file.read_bytes()).hexdigest()
                                  archive.write(file, name); manifest["files"].append({"name": name, "size": file.stat().st_size, "sha256": digest})

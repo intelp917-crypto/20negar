@@ -31,10 +31,15 @@ from .startup_manager import StartupManager
 from .update_manager import UpdateManager
 
 APP_VERSION = "0.2.0"
-MANAGED_ENV_KEYS = ("PORT", "NEGAR_DB_FILE_PATH", "NEGAR_STORAGE_DIR",
+MANAGED_ENV_KEYS = ("PORT", "NEGAR_DB_FILE_PATH", "NEGAR_STORAGE_DIR", "NEGAR_VIDEOS_DIR",
                     "NEGAR_DATA_DIR", "NEGAR_SSL_DIR", "NEGAR_ACME_WEBROOT",
                     "ENABLE_STANDARD_PORTS", "SECURE_PORT")
 RUNNING_PHASES = {"running", "external", "starting", "unhealthy"}
+
+
+def _is_within(root: Path | str, path: Path | str) -> bool:
+    root, path = Path(root).expanduser().resolve(), Path(path).expanduser().resolve()
+    return root == path or root in path.parents
 
 
 def _dotenv_value(value: Any) -> str:
@@ -67,6 +72,7 @@ class CoreBridge:
         self._adopt_checked = False
         self._action_lock = threading.RLock()
         self._storage_cache: tuple[float, int] = (0.0, -1)
+        self._videos_cache: tuple[float, int] = (0.0, -1)
         self.log = LogManager(self.paths.logs_dir).logger()
         self.output: list[str] = []
         self.output_lock = threading.Lock()
@@ -89,10 +95,24 @@ class CoreBridge:
             self.controller.startup_timeout = float(merged["startup_timeout"])
         return merged
 
+    @property
+    def videos_dir(self) -> Path:
+        """Where uploaded originals and their renditions live.
+
+        The server key stays ``videos/<file>`` either way; only the physical root
+        moves, so existing database rows keep working after a switch.
+        """
+        configured = str(self.settings.get("videos_dir") or "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
+        return (self.paths.storage_dir / "videos").expanduser().resolve()
+
     def _env_values(self) -> dict[str, str]:
         values = {"PORT": str(self.settings["port"])}
         if self.settings.get("storage_dir"):
             values["NEGAR_STORAGE_DIR"] = str(Path(self.settings["storage_dir"]).expanduser().resolve())
+        if self.settings.get("videos_dir"):
+            values["NEGAR_VIDEOS_DIR"] = str(self.videos_dir)
         if self.settings.get("database"):
             values["NEGAR_DB_FILE_PATH"] = str(Path(self.settings["database"]).expanduser().resolve())
         return values
@@ -101,6 +121,8 @@ class CoreBridge:
         env = {"PORT": str(self.settings["port"]), "NODE_ENV": str(self.settings["mode"])}
         if self.settings.get("storage_dir"):
             env["NEGAR_STORAGE_DIR"] = str(Path(self.settings["storage_dir"]).expanduser().resolve())
+        if self.settings.get("videos_dir"):
+            env["NEGAR_VIDEOS_DIR"] = str(self.videos_dir)
         if self.settings.get("database"):
             env["NEGAR_DB_FILE_PATH"] = str(Path(self.settings["database"]).expanduser().resolve())
         return env
@@ -261,6 +283,8 @@ class CoreBridge:
             "database_size": database.stat().st_size if database.exists() else 0,
             "storage": str(self.paths.storage_dir),
             "storage_size": self.storage_size(),
+            "videos": str(self.videos_dir),
+            "videos_size": self.videos_size(),
             "port": self.settings["port"],
             "mode": self.settings["mode"],
             "health_url": self.settings["health_url"],
@@ -300,26 +324,43 @@ class CoreBridge:
         result: dict[str, str] = {}
         with self.output_lock:
             lines = list(self.output)
+        markers = (("database", "Database file:"), ("videos", "Videos root:"),
+                   ("storage", "Storage root:"), ("data", "Data directory:"))
         for line in reversed(lines):
-            for key, marker in (("database", "Database file:"), ("storage", "Storage root:"),
-                                ("data", "Data directory:")):
+            for key, marker in markers:
                 if key not in result and marker in line:
                     result[key] = line.split(marker, 1)[1].strip()
-            if len(result) == 3:
+            if len(result) == len(markers):
                 break
         return result
 
+    @staticmethod
+    def _tree_size(root: Path) -> int:
+        try:
+            return sum(p.stat().st_size for p in root.rglob("*") if p.is_file()) if root.exists() else 0
+        except OSError:
+            return 0
+
     def storage_size(self, max_age: float = 30.0) -> int:
+        """Everything under the storage root, plus the videos root when it moved."""
         stamp, size = self._storage_cache
         if size >= 0 and time.monotonic() - stamp < max_age:
             return size
         root = self.paths.storage_dir
-        try:
-            total = sum(p.stat().st_size for p in root.rglob("*") if p.is_file()) if root.exists() else 0
-        except OSError:
-            total = 0
+        total = self._tree_size(root)
+        videos = self.videos_dir
+        if not _is_within(root, videos):
+            total += self._tree_size(videos)
         self._storage_cache = (time.monotonic(), total)
         return total
+
+    def videos_size(self, max_age: float = 30.0) -> int:
+        stamp, size = self._videos_cache
+        if size >= 0 and time.monotonic() - stamp < max_age:
+            return size
+        size = self._tree_size(self.videos_dir)
+        self._videos_cache = (time.monotonic(), size)
+        return size
 
     def storage_info(self) -> dict[str, Any]:
         root = self.paths.storage_dir
@@ -347,6 +388,10 @@ class CoreBridge:
                 return {"ok": True, "changed": False, "path": str(target),
                         "migrated": False, "message": "Already using this location"}
             self._guard_independent(target, self.paths.database, "storage")
+            if self.settings.get("videos_dir") and self._videos_inside(target):
+                raise ValueError("The videos folder is inside the new storage root. "
+                                 "Move the videos folder to an independent path first, "
+                                 "or reset it to the storage default.")
 
             was_running = self._server_is_up()
             if was_running and self.controller is not None and self.controller.identity is None:
@@ -393,6 +438,130 @@ class CoreBridge:
 
     def set_storage_path(self, value: str) -> dict[str, Any]:
         return self.apply_storage_path(value, migrate=False)
+
+    # ------------------------------------------------------------------
+    # Videos destination (may live on another drive)
+    # ------------------------------------------------------------------
+    def apply_videos_path(self, value: str, migrate: bool = False,
+                          restart: bool = True) -> dict[str, Any]:
+        """Point the server's `videos/` keys at another folder or drive.
+
+        The folder must stay outside the media storage root, so moving storage
+        later can never orphan or duplicate the video files.
+        """
+        with self._action_lock:
+            target = self._resolve_directory(value)
+            source = self.videos_dir
+            if target == source:
+                return {"ok": True, "changed": False, "path": str(target),
+                        "migrated": False, "message": "Already using this location"}
+            self._guard_videos_target(target)
+            if _is_within(source, target) or _is_within(target, source):
+                raise ValueError("The new videos folder must not sit inside the current "
+                                 "videos folder (or contain it).")
+
+            was_running = self._server_is_up()
+            if was_running and self.controller is not None and self.controller.identity is None:
+                raise RuntimeError("The server is running outside the manager. Stop it first, "
+                                   "then change the videos folder.")
+            target.mkdir(parents=True, exist_ok=True)
+            if not os.access(target, os.W_OK):
+                raise PermissionError(f"The videos folder is not writable: {target}")
+            stopped = bool(was_running and self.stop_server().get("ok"))
+            copied = 0
+            try:
+                if migrate:
+                    copied = self._migrate_tree(source, target)
+                self._write_server_env({
+                    "NEGAR_VIDEOS_DIR": str(target),
+                    "NEGAR_STORAGE_DIR": str(self.paths.storage_dir.expanduser().resolve()),
+                    "NEGAR_DB_FILE_PATH": str(self.paths.database.expanduser().resolve()),
+                    "PORT": str(self.settings["port"]),
+                })
+                self.settings = self.save_settings({"videos_dir": str(target)}, sync_env=False)
+                self._videos_cache = (0.0, -1)
+                self._storage_cache = (0.0, -1)
+                if self.controller is not None:
+                    self.controller.env["NEGAR_VIDEOS_DIR"] = str(target)
+                result: dict[str, Any] = {
+                    "ok": True, "changed": True, "path": str(target), "migrated": bool(migrate),
+                    "copied_files": copied, "source": str(source),
+                    "source_retained": bool(migrate),
+                    "restart_required": not (stopped and restart),
+                }
+            except Exception:
+                if stopped:
+                    self.start_server()
+                raise
+            if stopped and restart:
+                outcome = self.start_server()
+                wait = self.wait_until_healthy() if outcome.get("ok") else outcome
+                runtime = wait.get("runtime", {})
+                active = runtime.get("videos")
+                result.update({"restarted": bool(outcome.get("ok")),
+                               "healthy": bool(wait.get("healthy")),
+                               "runtime": runtime,
+                               "verified": bool(active and Path(active) == target)})
+            self.log.info("Videos destination: %s -> %s (migrated=%s)", source, target, migrate)
+            return result
+
+    def migrate_videos_path(self, value: str) -> dict[str, Any]:
+        return self.apply_videos_path(value, migrate=True)
+
+    def set_videos_path(self, value: str) -> dict[str, Any]:
+        return self.apply_videos_path(value, migrate=False)
+
+    def reset_videos_path(self, restart: bool = True) -> dict[str, Any]:
+        """Return videos to `<storage root>/videos` (the server default)."""
+        with self._action_lock:
+            if not self.settings.get("videos_dir"):
+                return {"ok": True, "changed": False, "path": str(self.videos_dir),
+                        "message": "Already using the storage default"}
+            source = self.videos_dir
+            target = (self.paths.storage_dir / "videos").expanduser().resolve()
+            was_running = self._server_is_up()
+            if was_running and self.controller is not None and self.controller.identity is None:
+                raise RuntimeError("The server is running outside the manager. Stop it first, "
+                                   "then change the videos folder.")
+            target.mkdir(parents=True, exist_ok=True)
+            stopped = bool(was_running and self.stop_server().get("ok"))
+            try:
+                self._write_server_env({}, remove=("NEGAR_VIDEOS_DIR",))
+                self.settings = self.save_settings({"videos_dir": ""}, sync_env=False)
+                self._videos_cache = (0.0, -1)
+                self._storage_cache = (0.0, -1)
+                if self.controller is not None:
+                    self.controller.env.pop("NEGAR_VIDEOS_DIR", None)
+            except Exception:
+                if stopped:
+                    self.start_server()
+                raise
+            result: dict[str, Any] = {"ok": True, "changed": True, "path": str(target),
+                                      "source": str(source), "migrated": False,
+                                      "source_retained": True}
+            if stopped and restart:
+                outcome = self.start_server()
+                wait = self.wait_until_healthy() if outcome.get("ok") else outcome
+                runtime = wait.get("runtime", {})
+                active = runtime.get("videos")
+                result.update({"restarted": bool(outcome.get("ok")),
+                               "healthy": bool(wait.get("healthy")), "runtime": runtime,
+                               "verified": bool(active and Path(active) == target)})
+            return result
+
+    def _videos_inside(self, storage: Path) -> bool:
+        """True when a custom videos folder would sit inside `storage`."""
+        videos = self.videos_dir
+        return _is_within(storage, videos) or _is_within(videos, storage)
+
+    def _guard_videos_target(self, target: Path) -> None:
+        storage = self.paths.storage_dir.expanduser().resolve()
+        if _is_within(storage, target) or _is_within(target, storage):
+            raise ValueError("The videos folder must be outside the media storage root. "
+                             "Choose another folder or drive.")
+        database = self.paths.database.expanduser().resolve()
+        if target == database or _is_within(target, database):
+            raise ValueError("The videos folder cannot contain the database file.")
 
     # ------------------------------------------------------------------
     # Database destination
@@ -500,11 +669,17 @@ class CoreBridge:
     def create_backup(self, include_media: bool = False,
                       destination: Path | None = None) -> dict[str, Any]:
         sources = [self.paths.database]
+        excluded: list[Path] = []
         if include_media:
             sources.append(self.paths.storage_dir)
+            if not _is_within(self.paths.storage_dir, self.videos_dir):
+                # The retained old videos folder must not be zipped twice, and
+                # must never shadow the active folder on restore.
+                sources.append(self.videos_dir)
+                excluded.append(self.paths.storage_dir / "videos")
         target = destination or (self.paths.backups_dir /
                                  f"20negar-backup-{time.strftime('%Y%m%d-%H%M%S')}.zip")
-        path = BackupManager(self.paths.backups_dir).create(sources, target)
+        path = BackupManager(self.paths.backups_dir).create(sources, target, exclude=excluded)
         self.log.info("Backup created: %s", path)
         return {"ok": True, "path": str(path), "size": path.stat().st_size}
 
@@ -545,14 +720,30 @@ class CoreBridge:
                     self.paths.database.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(database, self.paths.database)
                 media = root / "storage"
+                # A videos folder archived on its own (relocated destination)
+                # always wins; the storage copy would be the retained old one.
+                dedicated = root / "videos"
                 if media.is_dir():
                     for file in media.rglob("*"):
                         if not file.is_file():
                             continue
-                        destination = self.paths.storage_dir / file.relative_to(media)
+                        relative = file.relative_to(media)
+                        if dedicated.is_dir() and relative.parts and relative.parts[0] == "videos":
+                            continue
+                        base = (self.videos_dir if relative.parts and relative.parts[0] == "videos"
+                                else self.paths.storage_dir)
+                        destination = base / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(file, destination)
+                if dedicated.is_dir():
+                    for file in dedicated.rglob("*"):
+                        if not file.is_file():
+                            continue
+                        destination = self.videos_dir / file.relative_to(dedicated)
                         destination.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(file, destination)
             self._storage_cache = (0.0, -1)
+            self._videos_cache = (0.0, -1)
             result = {"ok": True, "recovery_snapshot": snapshot["path"],
                       "database": str(self.paths.database)}
             if was_running:
@@ -629,10 +820,13 @@ class CoreBridge:
             copied += 1
         return copied
 
-    def _write_server_env(self, updates: dict[str, str]) -> None:
+    def _write_server_env(self, updates: dict[str, str], remove=()) -> None:
         """Patch the dotenv file the TypeScript server loads at boot."""
         env_path = self.server_env_file()
         lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+        for key in remove:
+            pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(key)}\s*=")
+            lines = [line for line in lines if not pattern.match(line)]
         for key, value in updates.items():
             formatted = _dotenv_value(value)
             pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(key)}\s*=")
