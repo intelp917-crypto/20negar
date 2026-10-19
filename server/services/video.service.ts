@@ -27,6 +27,13 @@ export interface VideoReviewDto {
   createdAt: string;
 }
 
+export class VideoWorkflowError extends Error {
+  constructor(message: string, public readonly status: number = 400) {
+    super(message);
+    this.name = 'VideoWorkflowError';
+  }
+}
+
 export interface VideoDto {
   id: number;
   title: string;
@@ -36,9 +43,15 @@ export interface VideoDto {
   editorId: number;
   editorName: string;
   editorUsername: string;
-  supervisorId: number;
-  supervisorName: string;
-  supervisorUsername: string;
+  supervisorId: number | null;
+  supervisorName: string | null;
+  supervisorUsername: string | null;
+  /** فایل خام تصویربردار؛ تا جایگزینی توسط تدوین‌گر ناظر ندارد. */
+  isRaw: boolean;
+  editingClaimedById: number | null;
+  editingClaimedByName: string | null;
+  editingClaimedByUsername: string | null;
+  editingClaimedAt: string | null;
   adminId: number | null;
   adminName: string | null;
   adminUsername: string | null;
@@ -101,6 +114,10 @@ export class VideoService {
         ed.display_name as editorName, ed.username as editorUsername,
         v.supervisor_id as supervisorId,
         sp.display_name as supervisorName, sp.username as supervisorUsername,
+        v.is_raw as isRaw,
+        v.editing_claimed_by_id as editingClaimedById,
+        cl.display_name as editingClaimedByName, cl.username as editingClaimedByUsername,
+        v.editing_claimed_at as editingClaimedAt,
         v.admin_id as adminId, ad.display_name as adminName, ad.username as adminUsername,
         v.uploaded_by_id as uploadedById, ub.display_name as uploadedByName,
         v.status, v.processing_status as processingStatus, v.duration,
@@ -114,7 +131,8 @@ export class VideoService {
          p.created_at as projectCreatedAt, p.updated_at as projectUpdatedAt
       FROM videos v
       JOIN users ed ON v.editor_id = ed.id
-      JOIN users sp ON v.supervisor_id = sp.id
+      LEFT JOIN users sp ON v.supervisor_id = sp.id
+      LEFT JOIN users cl ON v.editing_claimed_by_id = cl.id
       LEFT JOIN users ad ON v.admin_id = ad.id
       LEFT JOIN users ub ON v.uploaded_by_id = ub.id
       LEFT JOIN projects p ON v.project_id = p.id
@@ -196,6 +214,10 @@ export class VideoService {
         ed.display_name as editorName, ed.username as editorUsername,
         v.supervisor_id as supervisorId,
         sp.display_name as supervisorName, sp.username as supervisorUsername,
+        v.is_raw as isRaw,
+        v.editing_claimed_by_id as editingClaimedById,
+        cl.display_name as editingClaimedByName, cl.username as editingClaimedByUsername,
+        v.editing_claimed_at as editingClaimedAt,
         v.admin_id as adminId, ad.display_name as adminName, ad.username as adminUsername,
         v.uploaded_by_id as uploadedById, ub.display_name as uploadedByName,
         v.status, v.processing_status as processingStatus, v.duration,
@@ -209,7 +231,8 @@ export class VideoService {
          p.created_at as projectCreatedAt, p.updated_at as projectUpdatedAt
       FROM videos v
       JOIN users ed ON v.editor_id = ed.id
-      JOIN users sp ON v.supervisor_id = sp.id
+      LEFT JOIN users sp ON v.supervisor_id = sp.id
+      LEFT JOIN users cl ON v.editing_claimed_by_id = cl.id
       LEFT JOIN users ad ON v.admin_id = ad.id
       LEFT JOIN users ub ON v.uploaded_by_id = ub.id
       LEFT JOIN projects p ON v.project_id = p.id
@@ -220,13 +243,14 @@ export class VideoService {
     if (!video) return null;
 
     // Strict Authorization Check:
-    if (user.role === 'Editor' && video.editorId !== user.id && video.uploadedById === null) {
+    // فایل خام برای همه تدوین‌گرها قابل مشاهده است؛ کات منتشرشده فقط برای تدوین‌گر خودش.
+    if (user.role === 'Editor' && video.editorId !== user.id && !video.isRaw) {
       return null;
     }
-    if (user.role === 'Cameraman' && video.uploadedById !== user.id) {
+    if (user.role === 'Cameraman' && (video.uploadedById !== user.id || !video.isRaw)) {
       return null;
     }
-    if (user.role === 'Supervisor' && video.supervisorId !== user.id) {
+    if (user.role === 'Supervisor' && (video.supervisorId !== user.id || video.isRaw)) {
       return null;
     }
     if (user.role === 'Admin' && (video.status !== 'Approved' || video.adminId !== user.id)) {
@@ -284,26 +308,35 @@ export class VideoService {
     originalPath: string;
     fileSize: number;
     editorId: number;
-    supervisorId: number;
+    supervisorId?: number | null;
     uploadedById?: number | null;
     parentVideoId?: number | null;
     projectId?: number | null;
     versionNumber?: number;
+    isRaw?: boolean;
     ipAddress?: string;
   }): VideoDto {
     const now = new Date().toISOString();
-    const status = 'PendingReview';
+    // فایل خام تصویربردار در صف تدوین است و تا انتخاب ناظر توسط تدوین‌گر
+    // وارد چرخه بازبینی نمی‌شود.
+    const isRaw = params.isRaw === true;
+    const status = isRaw ? 'Uploaded' : 'PendingReview';
     // Original files are streamed as uploaded. Do not enqueue FFmpeg/transcoding
     // jobs: playback must not depend on a server-side quality ladder.
     const processingStatus = 'Ready';
 
-    // Verify supervisor exists
-    const supervisor = db.queryOne<{ id: number; display_name: string }>(
-      'SELECT id, display_name FROM users WHERE id = ? AND role = ? AND is_active = 1',
-      [params.supervisorId, 'Supervisor']
-    );
-    if (!supervisor) {
-      throw new Error('ناظر کیفی انتخاب شده یافت نشد یا غیرفعال است.');
+    let supervisor: { id: number; display_name: string } | null = null;
+    if (!isRaw) {
+      if (!params.supervisorId) {
+        throw new Error('انتخاب ناظر کیفی الزامی است.');
+      }
+      supervisor = db.queryOne<{ id: number; display_name: string }>(
+        'SELECT id, display_name FROM users WHERE id = ? AND role = ? AND is_active = 1',
+        [params.supervisorId, 'Supervisor']
+      );
+      if (!supervisor) {
+        throw new Error('ناظر کیفی انتخاب شده یافت نشد یا غیرفعال است.');
+      }
     }
 
     const editor = db.queryOne<{ id: number; display_name: string }>(
@@ -314,17 +347,18 @@ export class VideoService {
     const res = db.run(
       `INSERT INTO videos (
          title, original_filename, original_path, editor_id, supervisor_id, uploaded_by_id, project_id,
-        status, processing_status, file_size, version_number, parent_video_id,
+        is_raw, status, processing_status, file_size, version_number, parent_video_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         params.title,
         params.originalFilename,
         params.originalPath,
         params.editorId,
-        params.supervisorId,
+        isRaw ? null : params.supervisorId ?? null,
         params.uploadedById ?? null,
         params.projectId ?? null,
+        isRaw ? 1 : 0,
         status,
         processingStatus,
         params.fileSize,
@@ -343,21 +377,26 @@ export class VideoService {
     // Audit log
     AuditService.log(
       params.editorId,
-      uploadedByCameraman ? 'بارگذاری فایل خام توسط تصویربردار' : 'بارگذاری ویدیو',
+      isRaw ? 'بارگذاری فایل خام توسط تصویربردار' : 'بارگذاری ویدیو',
       'Video',
       newVideoId,
-      `${uploaderLabel} ویدیوی "${params.title}" (نسخه ${params.versionNumber || 1}) را بارگذاری کرد و به ناظر کیفی ${supervisor.display_name} اختصاص داد.`,
+      isRaw
+        ? `${uploaderLabel} فایل خام "${params.title}" (نسخه ${params.versionNumber || 1}) را بارگذاری کرد؛ فایل در صف تدوین تدوین‌گران قرار گرفت و ناظر کیفی ندارد.`
+        : `${uploaderLabel} ویدیوی "${params.title}" (نسخه ${params.versionNumber || 1}) را بارگذاری کرد و به ناظر کیفی ${supervisor?.display_name} اختصاص داد.`,
       params.ipAddress
     );
 
-    // Notification to Supervisor
-    NotificationService.create(
-      params.supervisorId,
-      'ویدیوی جدید برای بازبینی',
-      `${editor?.display_name || uploaderLabel} پروژه "${params.title}" را جهت بازبینی ارسال نمود.`,
-      'info',
-      `/videos/${newVideoId}`
-    );
+    // Raw footage never enters a supervisor queue; the editor notifies the
+    // supervisor at publication time.
+    if (!isRaw && params.supervisorId) {
+      NotificationService.create(
+        params.supervisorId,
+        'ویدیوی جدید برای بازبینی',
+        `${editor?.display_name || uploaderLabel} پروژه "${params.title}" را جهت بازبینی ارسال نمود.`,
+        'info',
+        `/videos/${newVideoId}`
+      );
+    }
 
     return this.getVideoById(newVideoId, {
       id: params.editorId,
@@ -372,12 +411,16 @@ export class VideoService {
   private static roleScope(user: { id: number; role: UserRole }): { clause: string; params: any[] } {
     switch (user.role) {
       case 'Editor':
-        // Editor sees their own videos plus raw footage uploaded by cameramen.
-        return { clause: ' AND (v.editor_id = ? OR v.uploaded_by_id IS NOT NULL)', params: [user.id] };
+        // Every editor sees the shared raw-footage pool. Once an editor publishes
+        // a replacement (is_raw = 0), the cut belongs to that editor only.
+        return { clause: ' AND (v.is_raw = 1 OR v.editor_id = ?)', params: [user.id] };
       case 'Cameraman':
-        return { clause: ' AND v.uploaded_by_id = ?', params: [user.id] };
+        // The cameraman sees only their own uploads while they are still raw.
+        return { clause: ' AND v.uploaded_by_id = ? AND v.is_raw = 1', params: [user.id] };
       case 'Supervisor':
-        return { clause: ' AND v.supervisor_id = ?', params: [user.id] };
+        // Raw footage is never shown to supervisors; it appears only after an
+        // editor publishes it with this supervisor selected.
+        return { clause: ' AND v.supervisor_id = ? AND v.is_raw = 0', params: [user.id] };
       case 'Admin':
         return { clause: " AND v.status = 'Approved' AND v.admin_id = ?", params: [user.id] };
       default:
@@ -434,6 +477,9 @@ export class VideoService {
   }
 
   private static withProject(video: any): VideoDto {
+    video.isRaw = Boolean(video.isRaw);
+    video.supervisorId = video.supervisorId == null ? null : Number(video.supervisorId);
+    video.editingClaimedById = video.editingClaimedById == null ? null : Number(video.editingClaimedById);
     const projectId = video.projectId == null ? null : Number(video.projectId);
     video.projectId = projectId;
     video.project = projectId === null ? null : {
@@ -598,6 +644,10 @@ export class VideoService {
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
 
+    if (video.is_raw) {
+      throw new VideoWorkflowError('این فایل هنوز خام است؛ ناظر کیفی هنگام انتشار نسخه ادیت‌شده انتخاب می‌شود.');
+    }
+
     if (user.role !== 'Admin' && user.role !== 'SuperAdmin' && video.editor_id !== user.id) {
       throw new Error('تنها تدوین‌گر ایجادکننده ویدیو یا مدیر ارشد امکان انتساب ناظر کیفی را دارد.');
     }
@@ -682,6 +732,196 @@ export class VideoService {
     }
 
     return this.getVideoById(videoId, user)!;
+  }
+
+  /**
+   * برداشتن فایل خام توسط تدوین‌گر. هر تدوین‌گری می‌تواند فایل آزاد را بردارد،
+   * اما تا وقتی فایل در دست اوست، بقیه فقط نام او را به‌عنوان تدوین‌گر می‌بینند.
+   */
+  public static claimVideo(
+    videoId: number,
+    user: { id: number; role: UserRole; displayName: string; ipAddress?: string }
+  ): VideoDto {
+    if (user.role !== 'Editor') {
+      throw new VideoWorkflowError('تنها تدوین‌گران می‌توانند فایل خام را برای تدوین بردارند.', 403);
+    }
+
+    const video = db.queryOne<any>(
+      `SELECT v.*, cl.display_name as claimer_name
+         FROM videos v
+         LEFT JOIN users cl ON v.editing_claimed_by_id = cl.id
+        WHERE v.id = ?`,
+      [videoId]
+    );
+    if (!video) throw new VideoWorkflowError('ویدیو یافت نشد.', 404);
+    if (!video.is_raw) {
+      throw new VideoWorkflowError('این فایل خام نیست و چرخه تدوین آن آغاز شده است.');
+    }
+
+    if (video.editing_claimed_by_id && video.editing_claimed_by_id !== user.id) {
+      throw new VideoWorkflowError(
+        `این فایل در حال تدوین توسط ${video.claimer_name || 'تدوین‌گر دیگری'} است.`,
+        409
+      );
+    }
+
+    if (video.editing_claimed_by_id === user.id) {
+      return this.getVideoById(videoId, user)!;
+    }
+
+    const now = new Date().toISOString();
+    db.run(
+      `UPDATE videos
+          SET editing_claimed_by_id = ?, editing_claimed_at = ?, editor_id = ?, updated_at = ?
+        WHERE id = ? AND is_raw = 1 AND (editing_claimed_by_id IS NULL OR editing_claimed_by_id = ?)`,
+      [user.id, now, user.id, now, videoId, user.id]
+    );
+
+    AuditService.log(
+      user.id,
+      'شروع تدوین فایل خام',
+      'Video',
+      videoId,
+      `${user.displayName} فایل خام "${video.title}" را برای تدوین برداشت.`,
+      user.ipAddress
+    );
+
+    return this.getVideoById(videoId, user)!;
+  }
+
+  /** آزادکردن فایل خام توسط همان تدوین‌گر یا مدیرکل. */
+  public static releaseClaim(
+    videoId: number,
+    user: { id: number; role: UserRole; displayName: string; ipAddress?: string }
+  ): VideoDto {
+    const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
+    if (!video) throw new VideoWorkflowError('ویدیو یافت نشد.', 404);
+    if (!video.is_raw) {
+      throw new VideoWorkflowError('این فایل خام نیست.');
+    }
+    if (video.editing_claimed_by_id == null) {
+      return this.getVideoById(videoId, user)!;
+    }
+    if (user.role !== 'SuperAdmin' && video.editing_claimed_by_id !== user.id) {
+      throw new VideoWorkflowError('فقط تدوین‌گر مسئول یا مدیرکل می‌تواند تدوین را آزاد کند.', 403);
+    }
+
+    const now = new Date().toISOString();
+    const previousEditorId = video.uploaded_by_id ?? video.editor_id;
+    db.run(
+      `UPDATE videos
+          SET editing_claimed_by_id = NULL, editing_claimed_at = NULL, editor_id = ?, updated_at = ?
+        WHERE id = ?`,
+      [previousEditorId, now, videoId]
+    );
+
+    AuditService.log(
+      user.id,
+      'آزادسازی فایل خام',
+      'Video',
+      videoId,
+      `${user.displayName} فایل خام "${video.title}" را برای تدوین آزاد کرد.`,
+      user.ipAddress
+    );
+
+    return this.getVideoById(videoId, user)!;
+  }
+
+  /**
+   * جایگزینی فایل خام با نسخه ادیت‌شده روی همان رکورد.
+   * هم‌زمان ناظر کیفی انتخاب می‌شود تا کات در پنل او ظاهر شود.
+   */
+  public static replaceRawVideo(
+    videoId: number,
+    editor: { id: number; role: UserRole; displayName: string; ipAddress?: string },
+    input: {
+      originalFilename: string;
+      originalPath: string;
+      fileSize: number;
+      supervisorId: number;
+      title?: string;
+    }
+  ): { video: VideoDto; previousPath: string; previousThumbnailPath: string | null } {
+    if (editor.role !== 'Editor') {
+      throw new VideoWorkflowError('تنها تدوین‌گر می‌تواند فایل خام را با نسخه ادیت‌شده جایگزین کند.', 403);
+    }
+
+    const video = db.queryOne<any>(
+      `SELECT v.*, cl.display_name as claimer_name
+         FROM videos v
+         LEFT JOIN users cl ON v.editing_claimed_by_id = cl.id
+        WHERE v.id = ?`,
+      [videoId]
+    );
+    if (!video) throw new VideoWorkflowError('ویدیو یافت نشد.', 404);
+    if (!video.is_raw) {
+      throw new VideoWorkflowError('این فایل قبلاً جایگزین شده است؛ برای اصلاح از «بارگذاری نسخه جدید» استفاده کنید.');
+    }
+    if (video.editing_claimed_by_id && video.editing_claimed_by_id !== editor.id) {
+      throw new VideoWorkflowError(
+        `این فایل در حال تدوین توسط ${video.claimer_name || 'تدوین‌گر دیگری'} است.`,
+        409
+      );
+    }
+
+    const supervisor = db.queryOne<{ id: number; display_name: string }>(
+      'SELECT id, display_name FROM users WHERE id = ? AND role = ? AND is_active = 1',
+      [input.supervisorId, 'Supervisor']
+    );
+    if (!supervisor) {
+      throw new VideoWorkflowError('ناظر کیفی انتخاب‌شده یافت نشد یا غیرفعال است.');
+    }
+
+    const now = new Date().toISOString();
+    db.run(
+      `UPDATE videos
+          SET title = ?, original_filename = ?, original_path = ?, file_size = ?,
+              supervisor_id = ?, is_raw = 0, status = 'PendingReview', processing_status = 'Ready',
+              version_number = version_number + 1, editor_id = ?,
+              editing_claimed_by_id = NULL, editing_claimed_at = NULL,
+              thumbnail_path = NULL, rejection_reason = NULL, approved_at = NULL,
+              rejected_at = NULL, admin_id = NULL, updated_at = ?
+        WHERE id = ?`,
+      [
+        input.title?.trim() || video.title,
+        input.originalFilename,
+        input.originalPath,
+        input.fileSize,
+        supervisor.id,
+        editor.id,
+        now,
+        videoId,
+      ]
+    );
+
+    // کیفیت‌ها و جاب‌های رونده مربوط به فایل قبلی‌اند.
+    db.run('DELETE FROM video_qualities WHERE video_id = ?', [videoId]);
+    try {
+      db.run('DELETE FROM processing_jobs WHERE video_id = ?', [videoId]);
+    } catch {}
+
+    AuditService.log(
+      editor.id,
+      'انتشار نسخه ادیت‌شده فایل خام',
+      'Video',
+      videoId,
+      `${editor.displayName} نسخه ادیت‌شده "${input.title?.trim() || video.title}" را روی فایل خام جایگزین کرد و ناظر کیفی ${supervisor.display_name} را انتخاب نمود.`,
+      editor.ipAddress
+    );
+
+    NotificationService.create(
+      supervisor.id,
+      'نسخه ادیت‌شده برای بازبینی',
+      `${editor.displayName} نسخه ادیت‌شده پروژه "${input.title?.trim() || video.title}" را جهت بازبینی ارسال نمود.`,
+      'info',
+      `/videos/${videoId}`
+    );
+
+    return {
+      video: this.getVideoById(videoId, editor)!,
+      previousPath: video.original_path,
+      previousThumbnailPath: video.thumbnail_path ?? null,
+    };
   }
 
   /**

@@ -93,9 +93,17 @@ export interface Video {
   editorId: number;
   editorName: string;
   editorUsername: string;
-  supervisorId: number;
-  supervisorName: string;
-  supervisorUsername: string;
+  supervisorId: number | null;
+  supervisorName: string | null;
+  supervisorUsername: string | null;
+  uploadedById: number | null;
+  uploadedByName: string | null;
+  /** فایل خام تصویربردار؛ فقط برای همه تدوین‌گرها و مدیرکل قابل مشاهده است. */
+  isRaw: boolean;
+  editingClaimedById: number | null;
+  editingClaimedByName: string | null;
+  editingClaimedByUsername: string | null;
+  editingClaimedAt: string | null;
   adminId: number | null;
   adminName: string | null;
   adminUsername: string | null;

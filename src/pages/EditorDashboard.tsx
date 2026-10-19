@@ -6,6 +6,7 @@ import { VideoCard } from '../components/VideoCard.tsx';
 import { ProjectFolderGrid, ProjectFolderBar } from '../components/ProjectFolders.tsx';
 import { UploadModal } from '../components/UploadModal.tsx';
 import { NewVersionModal } from '../components/NewVersionModal.tsx';
+import { ReplaceRawModal } from '../components/ReplaceRawModal.tsx';
 import { cachedLoad, folderCacheKey, videosCacheKey, invalidateProjectCache } from '../api/projectCache.ts';
 import {
   UploadCloud,
@@ -40,6 +41,7 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
   const [currentTab, setCurrentTab] = useState<string>(activeFilter);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [revisionVideo, setRevisionVideo] = useState<Video | null>(null);
+  const [replacementVideo, setReplacementVideo] = useState<Video | null>(null);
   const [videoToDelete, setVideoToDelete] = useState<Video | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -345,7 +347,9 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
               onWatch={onWatchVideo}
               onViewDetails={onViewDetails}
               onUploadNewVersion={(vid) => setRevisionVideo(vid)}
+              onUploadReplacement={(vid) => setReplacementVideo(vid)}
               onDelete={(vid) => setVideoToDelete(vid)}
+              onClaimed={refreshAfterMutation}
             />
           ))}
         </div>
@@ -374,6 +378,20 @@ export const EditorDashboard: React.FC<EditorDashboardProps> = ({
           onSuccess={(revisedVid) => {
             setVideos((prev) => [revisedVid, ...prev.filter((v) => v.id !== revisedVid.id)]);
             setRevisionVideo(null);
+            refreshAfterMutation();
+          }}
+        />
+      )}
+
+      {/* Raw footage replacement: edit finished, publish to a supervisor */}
+      {replacementVideo && (
+        <ReplaceRawModal
+          video={replacementVideo}
+          isOpen={Boolean(replacementVideo)}
+          onClose={() => setReplacementVideo(null)}
+          onSuccess={(updated) => {
+            setVideos((prev) => prev.map((v) => (v.id === updated.id ? updated : v)));
+            setReplacementVideo(null);
             refreshAfterMutation();
           }}
         />

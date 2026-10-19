@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { VideoService } from '../services/video.service.ts';
+import { VideoService, VideoWorkflowError } from '../services/video.service.ts';
 import { TranscoderService } from '../services/transcoder.service.ts';
 import { fileStorage } from '../storage/local.storage.ts';
 import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
@@ -143,8 +143,15 @@ router.post(
         return;
       }
 
-      if (!supervisorId) {
+      const isCameraman = req.user!.role === 'Cameraman';
+      // فایل خام تصویربردار به ناظر نیاز ندارد؛ ناظر را تدوین‌گر هنگام
+      // انتشار نسخه ادیت‌شده انتخاب می‌کند.
+      if (!isCameraman && !supervisorId) {
         res.status(400).json({ error: 'انتخاب ناظر کیفی الزامی است.' });
+        return;
+      }
+      if (!isCameraman && !Number.isSafeInteger(Number(supervisorId))) {
+        res.status(400).json({ error: 'شناسه ناظر کیفی نامعتبر است.' });
         return;
       }
 
@@ -189,16 +196,16 @@ router.post(
       await fileStorage.storeLocalFile(tempPath, destinationKey);
       if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
 
-      const isCameraman = req.user!.role === 'Cameraman';
       const created = VideoService.createVideo({
         title: title.trim(),
         originalFilename: originalName,
         originalPath: destinationKey,
         fileSize,
         editorId: req.user!.id,
-        supervisorId: parseInt(supervisorId, 10),
+        supervisorId: isCameraman ? null : parseInt(supervisorId, 10),
         uploadedById: isCameraman ? req.user!.id : null,
         projectId: project.id,
+        isRaw: isCameraman,
         ipAddress: req.ip,
       });
 
@@ -296,6 +303,133 @@ router.post(
         } catch {}
       }
       res.status(500).json({ error: err.message || 'خطا در بارگذاری نسخه اصلاح‌شده.' });
+    }
+  }
+);
+
+// POST /api/videos/:id/claim - Editor takes a raw file for editing
+router.post('/:id/claim', authenticate, requireRole(['Editor']), (req: Request, res: Response): void => {
+  try {
+    const videoId = parseInt(req.params.id, 10);
+    const updated = VideoService.claimVideo(videoId, {
+      id: req.user!.id,
+      role: req.user!.role,
+      displayName: req.user!.displayName,
+      ipAddress: req.ip,
+    });
+    res.json(updated);
+  } catch (err: any) {
+    const status = err instanceof VideoWorkflowError ? err.status : 400;
+    res.status(status).json({ error: err.message || 'خطا در برداشتن فایل برای تدوین.' });
+  }
+});
+
+// POST /api/videos/:id/release - Editor (or SuperAdmin) releases a raw file
+router.post('/:id/release', authenticate, requireRole(['Editor', 'SuperAdmin']), (req: Request, res: Response): void => {
+  try {
+    const videoId = parseInt(req.params.id, 10);
+    const updated = VideoService.releaseClaim(videoId, {
+      id: req.user!.id,
+      role: req.user!.role,
+      displayName: req.user!.displayName,
+      ipAddress: req.ip,
+    });
+    res.json(updated);
+  } catch (err: any) {
+    const status = err instanceof VideoWorkflowError ? err.status : 400;
+    res.status(status).json({ error: err.message || 'خطا در آزادسازی فایل خام.' });
+  }
+});
+
+// POST /api/videos/:id/replace - Editor replaces the raw file with the edited cut
+// and selects the supervisor who should review it.
+router.post(
+  '/:id/replace',
+  authenticate,
+  requireRole(['Editor']),
+  videoUpload.single('video'),
+  async (req: Request, res: Response): Promise<void> => {
+    const videoId = parseInt(req.params.id, 10);
+    let chunkTempPath: string | null = null;
+    let storedKey: string | null = null;
+    try {
+      const supervisorId = parseInt(req.body.supervisorId, 10);
+      if (!Number.isSafeInteger(supervisorId) || supervisorId <= 0) {
+        res.status(400).json({ error: 'انتخاب ناظر کیفی برای انتشار نسخه ادیت‌شده الزامی است.' });
+        return;
+      }
+
+      let tempPath: string;
+      let originalName: string;
+      let fileSize: number;
+
+      if (req.body.uploadId) {
+        const assembled = resolveChunkedUpload(String(req.body.uploadId), req.user!.id);
+        if (!assembled) {
+          res.status(400).json({ error: 'نشست آپلود چانکی یافت نشد یا ناقص است؛ لطفاً دوباره تلاش کنید.' });
+          return;
+        }
+        tempPath = assembled.tempPath;
+        originalName = assembled.originalName;
+        fileSize = assembled.size;
+        chunkTempPath = assembled.tempPath;
+      } else if (req.file) {
+        tempPath = req.file.path;
+        originalName = normalizeUploadFilename(req.file.originalname) || 'video.mp4';
+        fileSize = req.file.size;
+      } else {
+        res.status(400).json({ error: 'لطفاً فایل نسخه ادیت‌شده را انتخاب کنید.' });
+        return;
+      }
+
+      const targetFileName = `edited_${videoId}_${Date.now()}_${path.basename(originalName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      storedKey = `videos/${targetFileName}`;
+      await fileStorage.storeLocalFile(tempPath, storedKey);
+      if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
+
+      const result = VideoService.replaceRawVideo(
+        videoId,
+        {
+          id: req.user!.id,
+          role: req.user!.role,
+          displayName: req.user!.displayName,
+          ipAddress: req.ip,
+        },
+        {
+          originalFilename: originalName,
+          originalPath: storedKey,
+          fileSize,
+          supervisorId,
+          title: req.body.title,
+        }
+      );
+
+      // فایل قبلی بعد از موفقیت جایگزینی پاک می‌شود.
+      try {
+        if (result.previousPath) await fileStorage.deleteFile(result.previousPath).catch(() => {});
+        if (result.previousThumbnailPath) await fileStorage.deleteFile(result.previousThumbnailPath).catch(() => {});
+        const hlsDir = path.join(PRIVATE_HLS_DIR, `video_${videoId}`);
+        if (fs.existsSync(hlsDir)) {
+          try { fs.rmSync(hlsDir, { recursive: true, force: true }); } catch {}
+        }
+      } catch (cleanupError) {
+        console.warn('[VideoRoutes] Replacement cleanup warning:', cleanupError);
+      }
+
+      res.status(201).json(result.video);
+    } catch (err: any) {
+      console.error('[VideoRoutes] Replace error:', err);
+      if (storedKey) {
+        try { await fileStorage.deleteFile(storedKey); } catch {}
+      }
+      if (chunkTempPath && fs.existsSync(chunkTempPath)) {
+        try { fs.unlinkSync(chunkTempPath); } catch {}
+      }
+      if (req.file && fs.existsSync(req.file.path)) {
+        try { fs.unlinkSync(req.file.path); } catch {}
+      }
+      const status = err instanceof VideoWorkflowError ? err.status : 500;
+      res.status(status).json({ error: err.message || 'خطا در جایگزینی فایل ادیت‌شده.' });
     }
   }
 );
@@ -555,6 +689,23 @@ router.get('/:id/download', authenticate, async (req: Request, res: Response): P
     if (!video) {
       res.status(404).json({ error: 'ویدیو یافت نشد یا دسترسی غیرمجاز است.' });
       return;
+    }
+
+    // دانلود فایل خام توسط تدوین‌گر به معنی برداشتن آن برای تدوین است؛
+    // بقیه تدوین‌گرها از این لحظه نام او را می‌بینند.
+    if (req.user!.role === 'Editor' && video.isRaw) {
+      try {
+        VideoService.claimVideo(videoId, {
+          id: req.user!.id,
+          role: req.user!.role,
+          displayName: req.user!.displayName,
+          ipAddress: req.ip,
+        });
+      } catch (claimError: any) {
+        const status = claimError instanceof VideoWorkflowError ? claimError.status : 400;
+        res.status(status).json({ error: claimError.message || 'این فایل در حال تدوین توسط تدوین‌گر دیگری است.' });
+        return;
+      }
     }
 
     const relativeFilePath = video.originalPath;

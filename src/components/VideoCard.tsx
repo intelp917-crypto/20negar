@@ -3,15 +3,18 @@ import { Video } from '../types/index.ts';
 import { StatusBadge, ProcessingBadge } from './StatusBadge.tsx';
 import { DownloadMenu } from './DownloadMenu.tsx';
 import { api } from '../api/client.ts';
-import { Play, Film, Clock, User, Shield, Users, AlertTriangle, ArrowUpLeft, Trash2 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext.tsx';
+import { Play, Film, Clock, User, Shield, Users, AlertTriangle, ArrowUpLeft, Trash2, Camera, UploadCloud, Loader2 } from 'lucide-react';
 
 interface VideoCardProps {
   video: Video;
   onWatch: (video: Video) => void;
   onViewDetails: (video: Video) => void;
   onUploadNewVersion?: (video: Video) => void;
+  onUploadReplacement?: (video: Video) => void;
   onQuickReview?: (video: Video) => void;
   onDelete?: (video: Video) => void;
+  onClaimed?: () => void;
   showSupervisorActions?: boolean;
 }
 
@@ -20,11 +23,24 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   onWatch,
   onViewDetails,
   onUploadNewVersion,
+  onUploadReplacement,
   onQuickReview,
   onDelete,
+  onClaimed,
   showSupervisorActions = false,
 }) => {
+  const { user } = useAuth();
   const [thumbError, setThumbError] = useState(false);
+
+  const isClaimedByOther = Boolean(
+    video.isRaw && video.editingClaimedById != null && video.editingClaimedById !== user?.id
+  );
+  const isClaimedByMe = Boolean(
+    video.isRaw && video.editingClaimedById != null && video.editingClaimedById === user?.id
+  );
+  const canReplaceRaw = Boolean(
+    video.isRaw && onUploadReplacement && user?.role === 'Editor' && !isClaimedByOther
+  );
 
   const formatDuration = (seconds: number) => {
     if (!seconds || seconds <= 0) return '--:--';
@@ -77,11 +93,18 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           </div>
         )}
 
-        {video.versionNumber > 1 && (
-          <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-purple-600/90 text-white font-mono text-[10px] font-bold shadow-md">
-            نسخه {video.versionNumber}
-          </div>
-        )}
+        <div className="absolute top-2 right-2 flex flex-col items-start gap-1">
+          {video.versionNumber > 1 && (
+            <div className="px-2 py-0.5 rounded-md bg-purple-600/90 text-white font-mono text-[10px] font-bold shadow-md">
+              نسخه {video.versionNumber}
+            </div>
+          )}
+          {video.isRaw && (
+            <div className="px-2 py-0.5 rounded-md bg-amber-500/90 text-zinc-950 font-semibold text-[10px] shadow-md flex items-center gap-1">
+              <Camera className="w-3 h-3" /> فایل خام
+            </div>
+          )}
+        </div>
 
         <div className="absolute top-2 left-2 flex flex-col items-end gap-1">
           <StatusBadge status={video.status} size="sm" />
@@ -105,22 +128,68 @@ export const VideoCard: React.FC<VideoCardProps> = ({
             {video.originalFilename}
           </div>
 
+          {video.isRaw && (
+            <div className={`mb-3 p-2.5 rounded-xl border text-[11px] leading-relaxed ${
+              isClaimedByOther
+                ? 'bg-amber-500/10 border-amber-500/25 text-amber-200'
+                : isClaimedByMe
+                  ? 'bg-purple-500/10 border-purple-500/25 text-purple-200'
+                  : 'bg-sky-500/10 border-sky-500/25 text-sky-200'
+            }`}>
+              <div className="flex items-center gap-1.5 font-bold mb-0.5">
+                {isClaimedByOther || isClaimedByMe ? (
+                  <Clock className="w-3 h-3" />
+                ) : (
+                  <Camera className="w-3 h-3" />
+                )}
+                {isClaimedByOther
+                  ? 'در حال تدوین توسط تدوین‌گر دیگر'
+                  : isClaimedByMe
+                    ? 'شما در حال تدوین این فایل هستید'
+                    : 'آزاد برای تدوین'}
+              </div>
+              <p>
+                {isClaimedByOther
+                  ? `${video.editingClaimedByName || 'تدوین‌گر دیگری'} این فایل را برداشته است؛ تا اتمام کار او امکان دانلود ندارید.`
+                  : isClaimedByMe
+                    ? 'پس از پایان تدوین، فایل ادیت‌شده را جایگزین کنید و ناظر کیفی را انتخاب نمایید.'
+                    : 'اولین دانلود، این فایل را به نام شما ثبت می‌کند و به بقیه تدوین‌گرها نمایش داده می‌شود.'}
+              </p>
+            </div>
+          )}
+
           {/* Editor & Supervisor Info */}
           <div className="space-y-1.5 text-xs text-zinc-400 border-t border-zinc-800/80 pt-2.5 mb-3">
+            {video.isRaw && video.uploadedByName && (
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-500 flex items-center gap-1.5">
+                  <Camera className="w-3.5 h-3.5" /> تصویربردار:
+                </span>
+                <span className="font-semibold text-zinc-300 truncate max-w-[140px]" title={video.uploadedByName}>
+                  {video.uploadedByName}
+                </span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <span className="text-zinc-500 flex items-center gap-1.5">
                 <User className="w-3.5 h-3.5" /> تدوین‌گر:
               </span>
-              <span className="font-semibold text-zinc-300 truncate max-w-[140px]" title={video.editorName}>
-                {video.editorName}
+              <span
+                className="font-semibold text-zinc-300 truncate max-w-[140px]"
+                title={video.isRaw ? (video.editingClaimedByName || 'در انتظار تدوین') : video.editorName}
+              >
+                {video.isRaw ? (video.editingClaimedByName || 'در انتظار تدوین') : video.editorName}
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-zinc-500 flex items-center gap-1.5">
                 <Shield className="w-3.5 h-3.5 text-purple-400/80" /> ناظر کیفی:
               </span>
-              <span className="font-semibold text-zinc-300 truncate max-w-[140px]" title={video.supervisorName}>
-                {video.supervisorName}
+              <span
+                className="font-semibold text-zinc-300 truncate max-w-[140px]"
+                title={video.isRaw ? 'پس از انتشار انتخاب می‌شود' : (video.supervisorName || 'تعیین نشده')}
+              >
+                {video.isRaw ? 'پس از انتشار' : (video.supervisorName || 'تعیین نشده')}
               </span>
             </div>
             {video.adminName && (
@@ -174,7 +243,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
               <ArrowUpLeft className="w-3 h-3 text-zinc-400" />
             </button>
 
-            <DownloadMenu video={video} size="sm" />
+            <DownloadMenu video={video} size="sm" onClaimed={onClaimed} />
 
             {onDelete && (
               <button
@@ -199,7 +268,24 @@ export const VideoCard: React.FC<VideoCardProps> = ({
             </button>
           )}
 
-          {video.status === 'Rejected' && onUploadNewVersion && (
+          {canReplaceRaw && (
+            <button
+              onClick={() => onUploadReplacement?.(video)}
+              className="w-full py-2 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-bold transition-colors flex items-center justify-center gap-1.5"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              آپلود جایگزین و انتخاب ناظر
+            </button>
+          )}
+
+          {video.isRaw && isClaimedByOther && (
+            <div className="w-full py-2 px-3 rounded-xl bg-zinc-950 text-zinc-500 border border-zinc-800 text-[11px] font-semibold flex items-center justify-center gap-1.5">
+              <Loader2 className="w-3.5 h-3.5" />
+              در انتظار پایان تدوین توسط {video.editingClaimedByName || 'تدوین‌گر دیگر'}
+            </div>
+          )}
+
+          {!video.isRaw && video.status === 'Rejected' && onUploadNewVersion && (
             <button
               onClick={() => onUploadNewVersion(video)}
               className="w-full py-2 px-3 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 text-xs font-bold transition-colors flex items-center justify-center gap-1"

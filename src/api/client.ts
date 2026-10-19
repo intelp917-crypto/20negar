@@ -387,6 +387,32 @@ export const api = {
     );
   },
 
+  /** برداشتن فایل خام برای تدوین؛ اولین دانلود تدوین‌گر هم همین را صدا می‌زند. */
+  claimVideo: (videoId: number) =>
+    request<Video>(`/api/videos/${videoId}/claim`, { method: 'POST' }),
+
+  releaseClaim: (videoId: number) =>
+    request<Video>(`/api/videos/${videoId}/release`, { method: 'POST' }),
+
+  /** جایگزینی فایل خام با نسخه ادیت‌شده روی همان رکورد + انتخاب ناظر */
+  uploadReplacement: (videoId: number, formData: FormData, onProgress?: (percent: number) => void) => {
+    const file = formData.get('video');
+    if (!(file instanceof File)) {
+      return Promise.reject(new Error('فایل ویدیو یافت نشد.'));
+    }
+    const fields: Record<string, string> = {};
+    formData.forEach((value, key) => {
+      if (typeof value === 'string') fields[key] = value;
+    });
+    const upload = () => tusUpload(file, fields, onProgress);
+    return upload().then((uploadId) =>
+      request<Video>(`/api/videos/${videoId}/replace`, {
+        method: 'POST',
+        body: JSON.stringify({ uploadId, ...fields }),
+      })
+    );
+  },
+
   uploadNewVersion: (videoId: number, formData: FormData, onProgress?: (percent: number) => void) => {
     const file = formData.get('video');
     if (!(file instanceof File)) {

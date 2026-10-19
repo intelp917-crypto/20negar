@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { UploadCloud, X, Film, CheckCircle2, AlertCircle, FileVideo } from 'lucide-react';
 import { NewProjectInput, Project, User, Video } from '../types/index.ts';
 import { api } from '../api/client.ts';
+import { useAuth } from '../context/AuthContext.tsx';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -10,6 +11,8 @@ interface UploadModalProps {
 }
 
 export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuccess }) => {
+  const { user } = useAuth();
+  const isCameraman = user?.role === 'Cameraman';
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [supervisorId, setSupervisorId] = useState<number | ''>('');
@@ -29,10 +32,15 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
   useEffect(() => {
     if (isOpen) {
       setIsLoadingProjects(true);
-      Promise.allSettled([api.getSupervisors(), api.getProjects()]).then(([supervisorResult, projectResult]) => {
+      Promise.allSettled([
+        isCameraman ? Promise.resolve([] as User[]) : api.getSupervisors(),
+        api.getProjects(),
+      ]).then(([supervisorResult, projectResult]) => {
         if (supervisorResult.status === 'fulfilled') {
           setSupervisors(supervisorResult.value);
-          if (supervisorResult.value.length > 0 && !supervisorId) setSupervisorId(supervisorResult.value[0].id);
+          if (!isCameraman && supervisorResult.value.length > 0 && !supervisorId) {
+            setSupervisorId(supervisorResult.value[0].id);
+          }
         } else {
           console.error('Failed to load supervisors:', supervisorResult.reason);
         }
@@ -49,6 +57,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     } else {
       setFile(null);
       setTitle('');
+      setSupervisors([]);
+      setSupervisorId('');
       setProjects([]);
       setIsLoadingProjects(false);
       setProjectSelection('');
@@ -58,7 +68,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       setIsProcessing(false);
       setError(null);
     }
-  }, [isOpen]);
+  }, [isOpen, isCameraman]);
 
   if (!isOpen) return null;
 
@@ -103,7 +113,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       setError('عنوان پروژه ویدیویی الزامی است.');
       return;
     }
-    if (!supervisorId) {
+    // تصویربردار فقط فایل خام می‌فرستد؛ انتخاب ناظر در مرحله انتشار نسخه ادیت‌شده
+    // توسط تدوین‌گر انجام می‌شود.
+    if (!isCameraman && !supervisorId) {
       setError('لطفا ناظر کیفی پروژه را انتخاب نمایید.');
       return;
     }
@@ -130,7 +142,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     const formData = new FormData();
     formData.append('video', file);
     formData.append('title', title.trim());
-    formData.append('supervisorId', String(supervisorId));
+    if (!isCameraman) formData.append('supervisorId', String(supervisorId));
     if (projectSelection === 'new') {
       formData.append('projectName', newProject!.name);
       if (newProject!.description) formData.append('projectDescription', newProject!.description);
@@ -163,8 +175,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
               <Film className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-zinc-100">بارگذاری پروژه ویدیویی جدید</h3>
-              <p className="text-xs text-zinc-400">ارسال کات تدوین برای بررسی ناظر کیفی استودیو ۲۰نگار</p>
+              <h3 className="text-base font-bold text-zinc-100">
+                {isCameraman ? 'بارگذاری فایل خام تصویربرداری' : 'بارگذاری پروژه ویدیویی جدید'}
+              </h3>
+              <p className="text-xs text-zinc-400">
+                {isCameraman
+                  ? 'فایل خام در استخر مشترک تدوین‌گران قرار می‌گیرد و ناظر کیفی ندارد'
+                  : 'ارسال کات تدوین برای بررسی ناظر کیفی استودیو ۲۰نگار'}
+              </p>
             </div>
           </div>
           <button
@@ -292,28 +310,35 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
               />
             </div>
 
-            <div>
-              <label className="block font-semibold text-zinc-300 mb-1.5">
-                انتخاب سرپرست / ناظر کیفی <span className="text-purple-400">*</span>
-              </label>
-              <select
-                required
-                disabled={uploadProgress !== null}
-                value={supervisorId}
-                 onChange={(e) => { setSupervisorId(Number(e.target.value)); setError(null); }}
-                className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
-              >
-                {supervisors.length === 0 && <option value="">در حال بارگذاری لیست ناظران...</option>}
-                {supervisors.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.displayName} (@{s.username})
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] text-zinc-500 mt-1">
-                ویدیو مستقیماً برای این ناظر کیفی ارسال شده و پس از تایید او به لیست ادمین افزوده می‌شود.
-              </p>
-            </div>
+            {isCameraman ? (
+              <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-[11px] text-sky-200 leading-relaxed">
+                این فایل به‌صورت خام ثبت می‌شود و فقط در پنل تدوین‌گران (و مدیرکل) دیده می‌شود.
+                انتخاب ناظر کیفی هنگام «انتشار نسخه ادیت‌شده» توسط تدوین‌گر انجام می‌شود.
+              </div>
+            ) : (
+              <div>
+                <label className="block font-semibold text-zinc-300 mb-1.5">
+                  انتخاب سرپرست / ناظر کیفی <span className="text-purple-400">*</span>
+                </label>
+                <select
+                  required
+                  disabled={uploadProgress !== null}
+                  value={supervisorId}
+                   onChange={(e) => { setSupervisorId(Number(e.target.value)); setError(null); }}
+                  className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all disabled:opacity-50"
+                >
+                  {supervisors.length === 0 && <option value="">در حال بارگذاری لیست ناظران...</option>}
+                  {supervisors.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.displayName} (@{s.username})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  ویدیو مستقیماً برای این ناظر کیفی ارسال شده و پس از تایید او به لیست ادمین افزوده می‌شود.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Upload Progress Bar */}
@@ -322,7 +347,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
               <div className="flex items-center justify-between text-xs">
                 <span className="text-zinc-200 font-medium">
                   {isProcessing
-                    ? 'بارگذاری با موفقیت انجام شد! ویدیو در حال آماده‌سازی برای ناظر کیفی است...'
+                    ? (isCameraman
+                        ? 'فایل خام با موفقیت ثبت شد و برای تدوین‌گران قابل مشاهده است.'
+                        : 'بارگذاری با موفقیت انجام شد! ویدیو در حال آماده‌سازی برای ناظر کیفی است...')
                     : `در حال انتقال ویدیو به حافظه امن سرور...`}
                 </span>
                 <span className="font-mono text-purple-400 font-bold">{uploadProgress}%</span>
@@ -365,7 +392,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
               className="px-5 py-2.5 font-bold rounded-xl bg-purple-600 hover:bg-purple-500 text-white transition-all shadow-lg shadow-purple-950/50 disabled:opacity-50 flex items-center gap-2"
             >
               <UploadCloud className="w-4 h-4" />
-              {uploadProgress !== null ? 'در حال بارگذاری...' : 'ارسال برای بررسی ناظر'}
+              {uploadProgress !== null
+                ? 'در حال بارگذاری...'
+                : isCameraman
+                  ? 'ثبت فایل خام برای تدوین‌گران'
+                  : 'ارسال برای بررسی ناظر'}
             </button>
           </div>
         </form>

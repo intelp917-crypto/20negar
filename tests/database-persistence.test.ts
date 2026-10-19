@@ -47,10 +47,15 @@ test('versioned migrations create upload sessions and are repeatable', async () 
 
     const migration = database.queryOne<{ version: number }>('SELECT MAX(version) as version FROM schema_migrations');
     const uploadTable = database.queryOne<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='upload_sessions'");
-    assert.equal(migration?.version, 4);
+    assert.equal(migration?.version, 5);
     assert.equal(uploadTable?.name, 'upload_sessions');
-    const projectColumn = database.queryOne<{ name: string }>("SELECT name FROM pragma_table_info('videos') WHERE name = 'project_id'");
-    assert.equal(projectColumn?.name, 'project_id');
+    const videoColumns = database.query<{ name: string; notnull: number }>('PRAGMA table_info(videos)');
+    const column = (name: string) => videoColumns.find((entry) => entry.name === name);
+    assert.equal(column('project_id')?.name, 'project_id');
+    assert.equal(column('is_raw')?.name, 'is_raw');
+    assert.equal(column('editing_claimed_by_id')?.name, 'editing_claimed_by_id');
+    // A raw upload has no supervisor until its edited replacement is published.
+    assert.equal(column('supervisor_id')?.notnull, 0);
     database.persistImmediate();
     database.dispose();
   } finally {

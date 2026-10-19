@@ -7,6 +7,7 @@ import { StatusBadge } from '../components/StatusBadge.tsx';
 import { DownloadMenu } from '../components/DownloadMenu.tsx';
 import { ReviewModal } from '../components/ReviewModal.tsx';
 import { NewVersionModal } from '../components/NewVersionModal.tsx';
+import { ReplaceRawModal } from '../components/ReplaceRawModal.tsx';
 import {
   ArrowRight,
   Calendar,
@@ -21,6 +22,9 @@ import {
   AlertTriangle,
   UploadCloud,
   Trash2,
+  Camera,
+  Lock,
+  Unlock,
 } from 'lucide-react';
 
 interface VideoDetailsPageProps {
@@ -47,6 +51,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
   }>({ isOpen: false, mode: 'approve' });
 
   const [isNewVersionOpen, setIsNewVersionOpen] = useState(false);
+  const [isReplacementOpen, setIsReplacementOpen] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -98,6 +103,26 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
     }
   };
 
+  const handleClaimRaw = async () => {
+    if (!video) return;
+    try {
+      const updated = await api.claimVideo(video.id);
+      setVideo(updated);
+    } catch (err: any) {
+      alert(err.message || 'خطا در برداشتن فایل برای تدوین.');
+    }
+  };
+
+  const handleReleaseRaw = async () => {
+    if (!video) return;
+    try {
+      const updated = await api.releaseClaim(video.id);
+      setVideo(updated);
+    } catch (err: any) {
+      alert(err.message || 'خطا در آزادسازی فایل خام.');
+    }
+  };
+
   const formatFileSize = (bytes: number) => {
     if (!bytes) return '0 مگابایت';
     const mb = bytes / (1024 * 1024);
@@ -139,8 +164,12 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
   }
 
   const isAssignedSupervisor = isSupervisor && video.supervisorId === user?.id;
-  const isOwnerEditor = isEditor && video.editorId === user?.id;
-  const canDelete = isSuperAdmin || isOwnerEditor || isSupervisor;
+  const isOwnerEditor = isEditor && (video.isRaw || video.editorId === user?.id);
+  const isRawClaimedByMe = Boolean(video.isRaw && video.editingClaimedById === user?.id);
+  const isRawClaimedByOther = Boolean(
+    video.isRaw && video.editingClaimedById != null && video.editingClaimedById !== user?.id
+  );
+  const canDelete = isSuperAdmin || (isEditor && video.editorId === user?.id) || isAssignedSupervisor;
 
   const handleDeleteVideo = async () => {
     if (!video) return;
@@ -178,7 +207,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
               <span>حذف ویدیو</span>
             </button>
           )}
-          <DownloadMenu video={video} variant="primary" />
+          <DownloadMenu video={video} variant="primary" onClaimed={fetchVideo} />
         </div>
       </div>
 
@@ -186,6 +215,72 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column: Player & Transcoding Pipeline (2 cols) */}
         <div className="lg:col-span-2 space-y-6">
+          {/* Raw footage station: shared with every editor until one claims it */}
+          {video.isRaw && (
+            <div className={`p-5 rounded-3xl border shadow-xl space-y-3 ${
+              isRawClaimedByOther
+                ? 'bg-amber-950/20 border-amber-500/30'
+                : 'bg-sky-950/20 border-sky-500/30'
+            }`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className={`flex items-center gap-2 text-sm font-bold ${isRawClaimedByOther ? 'text-amber-300' : 'text-sky-300'}`}>
+                  <Camera className="w-4 h-4" />
+                  فایل خام تصویربردار
+                </div>
+                <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-zinc-950/60 text-zinc-300 border border-zinc-700/70">
+                  قابل مشاهده برای همه تدوین‌گران
+                </span>
+              </div>
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                {isRawClaimedByOther
+                  ? `این فایل در حال تدوین توسط ${video.editingClaimedByName || 'تدوین‌گر دیگری'} است؛ تا پایان کار او امکان برداشتن فایل وجود ندارد.`
+                  : isRawClaimedByMe
+                    ? 'این فایل را برداشته‌اید. پس از پایان تدوین، فایل نهایی را جایگزین کنید و ناظر کیفی را انتخاب نمایید.'
+                    : 'این فایل هنوز آزاد است. با شروع تدوین یا دانلود، فایل به نام شما ثبت می‌شود و سایر تدوین‌گرها نام شما را می‌بینند.'}
+              </p>
+
+              {isEditor && !isRawClaimedByOther && (
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  {!isRawClaimedByMe && (
+                    <button
+                      onClick={handleClaimRaw}
+                      className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center gap-1.5 transition-colors"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      شروع تدوین (برداشتن فایل)
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setIsReplacementOpen(true)}
+                    className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                  >
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    آپلود جایگزین و انتخاب ناظر
+                  </button>
+                  {isRawClaimedByMe && (
+                    <button
+                      onClick={handleReleaseRaw}
+                      className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                    >
+                      <Unlock className="w-3.5 h-3.5" />
+                      آزادکردن برای بقیه
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {isSuperAdmin && isRawClaimedByOther && (
+                <button
+                  onClick={handleReleaseRaw}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                >
+                  <Unlock className="w-3.5 h-3.5" />
+                  آزادکردن فایل از دست تدوین‌گر
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-2 sm:p-3 shadow-xl">
             <VideoPlayer
               videoId={video.id}
@@ -230,7 +325,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
           )}
 
           {/* Editor Action if Rejected */}
-          {isOwnerEditor && video.status === 'Rejected' && (
+          {isOwnerEditor && !video.isRaw && video.status === 'Rejected' && (
             <div className="p-6 rounded-3xl bg-rose-950/20 border border-rose-500/30 space-y-3">
               <div className="flex items-center gap-2 text-rose-400 text-sm font-bold">
                 <AlertTriangle className="w-4 h-4" />
@@ -372,7 +467,11 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                     <UserIcon className="w-3.5 h-3.5 text-sky-400" /> تدوین‌گر پروژه:
                   </span>
                 </div>
-                <div className="text-xs font-bold text-zinc-200">{video.editorName}</div>
+                <div className="text-xs font-bold text-zinc-200">
+                  {video.isRaw
+                    ? (video.editingClaimedByName || 'در انتظار برداشتن توسط تدوین‌گر')
+                    : video.editorName}
+                </div>
               </div>
 
               {/* Supervisor Assignment */}
@@ -381,17 +480,22 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                   <span className="flex items-center gap-1.5">
                     <Shield className="w-3.5 h-3.5 text-amber-400" /> ناظر کیفی:
                   </span>
-                  {(isOwnerEditor || isAdmin || isSuperAdmin) && (
+                  {!video.isRaw && (isOwnerEditor || isAdmin || isSuperAdmin) && (
                     <span className="text-[10px] text-purple-400">قابلیت تغییر</span>
                   )}
                 </div>
 
-                {isOwnerEditor || isAdmin || isSuperAdmin ? (
+                {video.isRaw ? (
+                  <div className="text-xs text-zinc-400 leading-relaxed">
+                    پس از جایگزینی نسخه ادیت‌شده، ناظر کیفی را انتخاب می‌کنید تا کات در پنل او نمایش داده شود.
+                  </div>
+                ) : isOwnerEditor || isAdmin || isSuperAdmin ? (
                   <select
-                    value={video.supervisorId}
+                    value={video.supervisorId ?? 0}
                     onChange={(e) => handleSupervisorChange(Number(e.target.value))}
                     className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-purple-500"
                   >
+                    {video.supervisorId == null && <option value={0} disabled>انتخاب ناظر کیفی</option>}
                     {supervisors.map((sp) => (
                       <option key={sp.id} value={sp.id}>
                         {sp.displayName} (@{sp.username})
@@ -399,12 +503,12 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                     ))}
                   </select>
                 ) : (
-                  <div className="text-xs font-bold text-zinc-200">{video.supervisorName}</div>
+                  <div className="text-xs font-bold text-zinc-200">{video.supervisorName || 'تعیین نشده'}</div>
                 )}
               </div>
 
               {/* Admin Destination Assignment (مدیرکل یا ناظر کیفی) */}
-              {(isSuperAdmin || isSupervisor) && (
+              {!video.isRaw && (isSuperAdmin || isSupervisor) && (
                 <div className="p-3 rounded-2xl bg-zinc-950 border border-purple-500/30 space-y-1.5">
                   <div className="flex items-center justify-between text-xs text-zinc-400">
                     <span className="flex items-center gap-1.5">
@@ -429,7 +533,7 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
               )}
 
               {/* نمایش ادمین مقصد برای سایر نقش‌ها */}
-              {!(isSuperAdmin || isSupervisor) && (
+              {!video.isRaw && !(isSuperAdmin || isSupervisor) && (
                 <div className="p-3 rounded-2xl bg-zinc-950 border border-zinc-800 space-y-1.5">
                   <div className="flex items-center justify-between text-xs text-zinc-400">
                     <span className="flex items-center gap-1.5">
@@ -449,15 +553,21 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                 دانلود فایل اصلی
               </h4>
               <div className="space-y-1.5">
-                <a
-                   href={api.getDownloadUrl(video.id)}
-                  download
-                  className="w-full flex items-center justify-between p-2.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 text-xs text-zinc-300 transition-colors border border-zinc-800/80"
-                >
-                  <span className="font-semibold">نسخه اصلی Master Cut</span>
-                  <span className="text-[10px] font-mono text-zinc-500">{formatFileSize(video.fileSize)}</span>
-                </a>
-
+                {video.isRaw ? (
+                  <div className="p-3 rounded-xl bg-zinc-950 text-[11px] text-zinc-400 border border-zinc-800/80 leading-relaxed">
+                    برای برداشتن فایل خام و شروع تدوین از دکمه «دانلود / تدوین» بالای صفحه استفاده کنید.
+                    دانلود از این بخش، فایل را به نام شما ثبت می‌کند.
+                  </div>
+                ) : (
+                  <a
+                     href={api.getDownloadUrl(video.id)}
+                    download
+                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-zinc-950 hover:bg-zinc-800 text-xs text-zinc-300 transition-colors border border-zinc-800/80"
+                  >
+                    <span className="font-semibold">نسخه اصلی Master Cut</span>
+                    <span className="text-[10px] font-mono text-zinc-500">{formatFileSize(video.fileSize)}</span>
+                  </a>
+                )}
               </div>
             </div>
           </div>
@@ -483,6 +593,17 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
         onSuccess={(newVer) => {
           setVideo(newVer);
           setIsNewVersionOpen(false);
+        }}
+      />
+
+      {/* Raw replacement / publication modal */}
+      <ReplaceRawModal
+        video={video}
+        isOpen={isReplacementOpen}
+        onClose={() => setIsReplacementOpen(false)}
+        onSuccess={(updated) => {
+          setVideo(updated);
+          setIsReplacementOpen(false);
         }}
       />
 

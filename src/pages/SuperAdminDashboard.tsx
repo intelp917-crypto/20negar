@@ -12,6 +12,7 @@ import {
   Crown,
   Users,
   Film,
+  Camera,
   HardDrive,
   ShieldAlert,
   KeyRound,
@@ -348,7 +349,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       v.title.toLowerCase().includes(s) ||
       v.originalFilename.toLowerCase().includes(s) ||
       v.editorName.toLowerCase().includes(s) ||
-      v.supervisorName.toLowerCase().includes(s)
+      (v.supervisorName || '').toLowerCase().includes(s) ||
+      (v.editingClaimedByName || '').toLowerCase().includes(s)
     );
   });
 
@@ -371,6 +373,13 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
         return (
           <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
             ناظر کیفی
+          </span>
+        );
+      case 'Cameraman':
+        return (
+          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-teal-500/10 text-teal-400 border border-teal-500/30 flex items-center gap-1">
+            <Camera className="w-3 h-3" />
+            تصویربردار
           </span>
         );
       case 'Admin':

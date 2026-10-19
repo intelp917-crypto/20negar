@@ -1,4 +1,6 @@
-import { db } from './database.ts';
+import { db, RelationalDatabase } from './database.ts';
+
+type RelationalDatabaseLike = Pick<RelationalDatabase, 'exec' | 'run' | 'query' | 'queryOne'>;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -24,9 +26,14 @@ CREATE TABLE IF NOT EXISTS videos (
   original_path TEXT NOT NULL,
   thumbnail_path TEXT,
   editor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  supervisor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  -- Raw cameraman footage has no supervisor yet; the editor picks one when
+  -- publishing the edited replacement.
+  supervisor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  is_raw INTEGER NOT NULL DEFAULT 0 CHECK(is_raw IN (0, 1)),
+  editing_claimed_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  editing_claimed_at TEXT,
   status TEXT NOT NULL CHECK(status IN ('Uploaded', 'PendingReview', 'Approved', 'Rejected')) DEFAULT 'Uploaded',
   processing_status TEXT NOT NULL CHECK(processing_status IN ('Uploading', 'Processing', 'Ready', 'ProcessingFailed')) DEFAULT 'Processing',
   duration REAL DEFAULT 0,
@@ -109,6 +116,102 @@ CREATE INDEX IF NOT EXISTS idx_processing_jobs_comp ON processing_jobs(video_id,
 CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, is_read, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_comp ON audit_logs(user_id, created_at DESC);
 `;
+
+/**
+ * فایل خام تصویربردار تا زمانی که تدوین‌گر جایگزینش نکند، ناظر کیفی ندارد.
+ * ستون supervisor_id در پایگاه‌های قدیمی NOT NULL است، بنابراین فقط در همان
+ * حالت جدول videos یک‌بار بازسازی می‌شود. بقیه تغییرها افزایشی و تکرارپذیرند.
+ */
+function migrateVideosForRawFootage(database: RelationalDatabaseLike): void {
+  const columns = database.query<{ name: string; notnull: number }>('PRAGMA table_info(videos)');
+  const byName = new Map(columns.map((column) => [column.name, column]));
+
+  if (!byName.has('is_raw')) {
+    database.exec("ALTER TABLE videos ADD COLUMN is_raw INTEGER NOT NULL DEFAULT 0 CHECK(is_raw IN (0, 1))");
+  }
+  if (!byName.has('editing_claimed_by_id')) {
+    database.exec('ALTER TABLE videos ADD COLUMN editing_claimed_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+  }
+  if (!byName.has('editing_claimed_at')) {
+    database.exec('ALTER TABLE videos ADD COLUMN editing_claimed_at TEXT');
+  }
+
+  if (byName.get('supervisor_id')?.notnull === 1) {
+    console.log('[Migration] Rebuilding videos table so raw footage can be unassigned...');
+    database.exec('PRAGMA foreign_keys = OFF;');
+    try {
+      database.exec('BEGIN;');
+      database.exec(`
+        CREATE TABLE videos_raw_migrated (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          original_filename TEXT NOT NULL,
+          original_path TEXT NOT NULL,
+          thumbnail_path TEXT,
+          editor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          supervisor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          is_raw INTEGER NOT NULL DEFAULT 0 CHECK(is_raw IN (0, 1)),
+          editing_claimed_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          editing_claimed_at TEXT,
+          status TEXT NOT NULL CHECK(status IN ('Uploaded', 'PendingReview', 'Approved', 'Rejected')) DEFAULT 'Uploaded',
+          processing_status TEXT NOT NULL CHECK(processing_status IN ('Uploading', 'Processing', 'Ready', 'ProcessingFailed')) DEFAULT 'Processing',
+          duration REAL DEFAULT 0,
+          original_resolution TEXT,
+          file_size INTEGER NOT NULL DEFAULT 0,
+          version_number INTEGER NOT NULL DEFAULT 1,
+          parent_video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL,
+          rejection_reason TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          approved_at TEXT,
+          rejected_at TEXT,
+          project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL
+        );
+        INSERT INTO videos_raw_migrated (
+          id, title, original_filename, original_path, thumbnail_path, editor_id,
+          supervisor_id, admin_id, uploaded_by_id, is_raw, editing_claimed_by_id,
+          editing_claimed_at, status, processing_status, duration, original_resolution,
+          file_size, version_number, parent_video_id, rejection_reason, created_at,
+          updated_at, approved_at, rejected_at, project_id
+        )
+        SELECT id, title, original_filename, original_path, thumbnail_path, editor_id,
+               supervisor_id, admin_id, uploaded_by_id, is_raw, editing_claimed_by_id,
+               editing_claimed_at, status, processing_status, duration, original_resolution,
+               file_size, version_number, parent_video_id, rejection_reason, created_at,
+               updated_at, approved_at, rejected_at, project_id
+          FROM videos;
+        DROP TABLE videos;
+        ALTER TABLE videos_raw_migrated RENAME TO videos;
+      `);
+      database.exec('COMMIT;');
+    } catch (error) {
+      try { database.exec('ROLLBACK;'); } catch {}
+      throw error;
+    } finally {
+      database.exec('PRAGMA foreign_keys = ON;');
+    }
+    console.log('[Migration] videos table rebuilt successfully.');
+  }
+
+  // آپلودهای قدیمی تصویربردار که هنوز تایید نشده‌اند، فایل خام محسوب می‌شوند.
+  database.run(
+    `UPDATE videos SET is_raw = 1, supervisor_id = NULL
+      WHERE is_raw = 0 AND uploaded_by_id IS NOT NULL AND approved_at IS NULL`
+  );
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_videos_editor_status ON videos(editor_id, status);
+    CREATE INDEX IF NOT EXISTS idx_videos_supervisor_status ON videos(supervisor_id, status);
+    CREATE INDEX IF NOT EXISTS idx_videos_admin_status ON videos(admin_id, status);
+    CREATE INDEX IF NOT EXISTS idx_videos_status_created ON videos(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_videos_created ON videos(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_videos_project ON videos(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_videos_raw ON videos(is_raw, status);
+    CREATE INDEX IF NOT EXISTS idx_videos_claimed ON videos(editing_claimed_by_id);
+  `);
+}
 
 export function runMigrations(database = db): void {
   // Create missing base tables first so additive compatibility checks below
@@ -297,5 +400,17 @@ export function runMigrations(database = db): void {
       database.exec('ROLLBACK;');
       throw error;
     }
+  }
+
+  // Migration 5: raw-footage workflow (nullable supervisor, raw flag, editor claim).
+  const versionAfterMigrations = database.queryOne<{ version: number }>(
+    'SELECT COALESCE(MAX(version), 0) as version FROM schema_migrations'
+  )?.version ?? 0;
+  if (versionAfterMigrations < 5) {
+    migrateVideosForRawFootage(database);
+    database.run(
+      'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
+      [5, new Date().toISOString()]
+    );
   }
 }

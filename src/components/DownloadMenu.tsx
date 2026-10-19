@@ -1,21 +1,31 @@
 import React, { useState } from 'react';
-import { Download, X, Film, CheckCircle2 } from 'lucide-react';
+import { Download, X, Film, CheckCircle2, AlertTriangle, Loader2, Lock } from 'lucide-react';
 import { Video } from '../types/index.ts';
 import { api } from '../api/client.ts';
+import { useAuth } from '../context/AuthContext.tsx';
 
 interface DownloadMenuProps {
   video: Video;
   variant?: 'primary' | 'secondary' | 'ghost';
   size?: 'sm' | 'md';
+  onClaimed?: () => void;
 }
 
 export const DownloadMenu: React.FC<DownloadMenuProps> = ({
   video,
   variant = 'secondary',
   size = 'md',
+  onClaimed,
 }) => {
+  const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [claimError, setClaimError] = useState<string | null>(null);
+
+  const claimedByOther = Boolean(
+    video.isRaw && video.editingClaimedById != null && video.editingClaimedById !== user?.id
+  );
+  const isEditingDownload = user?.role === 'Editor' && video.isRaw;
 
   const formatFileSize = (bytes: number) => {
     if (!bytes || bytes === 0) return 'محاسبه نشده';
@@ -26,7 +36,23 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
     return `${mb.toFixed(1)} مگابایت`;
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
+    setClaimError(null);
+    if (isEditingDownload) {
+      if (claimedByOther) {
+        setClaimError(`این فایل در حال تدوین توسط ${video.editingClaimedByName || 'تدوین‌گر دیگری'} است.`);
+        return;
+      }
+      try {
+        // دانلود = برداشتن فایل برای تدوین؛ از این لحظه بقیه تدوین‌گرها نام او را می‌بینند.
+        await api.claimVideo(video.id);
+        onClaimed?.();
+      } catch (err: any) {
+        setClaimError(err.message || 'این فایل در حال تدوین توسط تدوین‌گر دیگری است.');
+        return;
+      }
+    }
+
     setIsDownloading(true);
     const url = api.getDownloadUrl(video.id);
     const link = document.createElement('a');
@@ -53,13 +79,15 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
   return (
     <>
       <button
-        onClick={() => setIsOpen(true)}
+        onClick={() => { setIsOpen(true); setClaimError(null); }}
         className={`inline-flex items-center gap-1.5 rounded-xl transition-colors ${btnClasses} ${sizeClasses}`}
-         title="دانلود فایل اصلی ویدیو"
+         title={isEditingDownload ? 'دانلود فایل خام و شروع تدوین' : 'دانلود فایل اصلی ویدیو'}
         type="button"
       >
-        <Download className={size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
-        <span>دانلود</span>
+        {claimedByOther
+          ? <Lock className={size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
+          : <Download className={size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'} />}
+        <span>{isEditingDownload ? 'دانلود / تدوین' : 'دانلود'}</span>
       </button>
 
       {/* Rock-solid, mobile-friendly fixed Bottom Sheet & Desktop Modal */}
@@ -94,27 +122,39 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
               >
                 <X className="w-5 h-5" />
               </button>
-            </div>
+            </div>             {isEditingDownload && (
+               <div className={`p-3.5 rounded-2xl border text-[11px] leading-relaxed ${
+                 claimedByOther
+                   ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                   : 'bg-sky-500/10 border-sky-500/30 text-sky-200'
+               }`}>
+                 {claimedByOther
+                   ? `این فایل هم‌اکنون توسط ${video.editingClaimedByName || 'تدوین‌گر دیگری'} در حال تدوین است. برای جلوگیری از تدوین هم‌زمان، دانلود برای شما قفل شده است.`
+                   : 'با دانلود این فایل خام، تدوین آن به نام شما ثبت می‌شود و سایر تدوین‌گرها می‌بینند که این فایل در دست شماست.'}
+               </div>
+             )}
 
              {/* Original file only: no server-side quality generation. */}
              <div className="space-y-2">
                <div className="text-[11px] font-semibold text-zinc-400">فایل اصلی بدون تبدیل سمت سرور:</div>
                <button
                  onClick={handleDownload}
-                 disabled={isDownloading}
-                 className="w-full flex items-center justify-between p-3.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800/90 border border-zinc-800 hover:border-purple-500/50 transition-all text-right group"
+                 disabled={isDownloading || claimedByOther}
+                 className="w-full flex items-center justify-between p-3.5 rounded-2xl bg-zinc-950 hover:bg-zinc-800/90 border border-zinc-800 hover:border-purple-500/50 transition-all text-right group disabled:opacity-50 disabled:hover:border-zinc-800"
                >
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-lg bg-zinc-900 group-hover:bg-purple-600/20 group-hover:text-purple-400 text-zinc-400 flex items-center justify-center transition-colors">
                        {isDownloading ? (
                         <CheckCircle2 className="w-4 h-4 text-emerald-400 animate-pulse" />
+                      ) : claimedByOther ? (
+                        <Lock className="w-4 h-4" />
                       ) : (
                         <Download className="w-4 h-4" />
                       )}
                     </div>
                     <div>
                          <div className="text-xs font-bold text-zinc-200 group-hover:text-white">
-                         نسخه اصلی منبع
+                         {isEditingDownload ? 'فایل خام برای شروع تدوین' : 'نسخه اصلی منبع'}
                        </div>
                        <div className="text-[10px] text-zinc-400 font-mono mt-0.5">
                          {video.originalResolution || 'کیفیت اصلی'}
@@ -125,8 +165,22 @@ export const DownloadMenu: React.FC<DownloadMenuProps> = ({
                   <div className="text-left font-mono text-xs font-semibold text-purple-400">
                      {formatFileSize(video.fileSize)}
                   </div>
-                </button>
+                 </button>
             </div>
+
+            {claimError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-[11px] flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>{claimError}</span>
+              </div>
+            )}
+
+            {isDownloading && isEditingDownload && (
+              <div className="text-[11px] text-purple-300 flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ثبت تدوین و آماده‌سازی دانلود...
+              </div>
+            )}
 
             {/* Close Button */}
             <button

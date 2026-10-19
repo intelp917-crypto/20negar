@@ -429,7 +429,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <div className="text-[11px] text-zinc-500 font-mono break-all" dir="ltr">{v.originalFilename}</div>
                     </td>
                     <td className="px-4 py-3 font-medium text-zinc-200">{v.editorName}</td>
-                    <td className="px-4 py-3 font-medium text-purple-300">{v.supervisorName}</td>
+                    <td className="px-4 py-3 font-medium text-purple-300">{v.supervisorName || '—'}</td>
                     <td className="px-4 py-3 font-mono text-zinc-400">
                       <div>{v.originalResolution || '--'}</div>
                       <div className="text-[10px] text-zinc-500">

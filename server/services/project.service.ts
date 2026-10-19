@@ -94,7 +94,7 @@ export function getProject(user: ProjectUser, id: number): ProjectDto | null {
             p.status, p.is_confidential as isConfidential, p.created_by_id as createdById,
             p.created_at as createdAt, p.updated_at as updatedAt
        FROM projects p
-      WHERE p.id = ? AND (p.created_by_id = ? OR p.is_confidential = 0 AND (? IN ('SuperAdmin', 'Admin', 'Editor')) OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = ?))`,
+      WHERE p.id = ? AND (p.created_by_id = ? OR p.is_confidential = 0 AND (? IN ('SuperAdmin', 'Admin', 'Editor', 'Cameraman')) OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = ?))`,
     [id, user.id, user.role, user.id]
   );
   return row ? toProject(row) : null;

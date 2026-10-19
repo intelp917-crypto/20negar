@@ -40,21 +40,24 @@ function seed(database: RelationalDatabase): void {
     editorId: number;
     uploadedById?: number | null;
     adminId?: number | null;
+    isRaw?: boolean;
     status: 'Approved' | 'PendingReview' | 'Rejected';
     createdAt: string;
   }) =>
     database.run(
       `INSERT INTO videos (
          id, title, original_filename, original_path, editor_id, supervisor_id, admin_id, uploaded_by_id,
-         status, processing_status, file_size, version_number, project_id, created_at, updated_at
-       ) VALUES (?, ?, ?, 'videos/test.mp4', ?, 2, ?, ?, ?, 'Ready', 1024, 1, ?, ?, ?)`,
+         is_raw, status, processing_status, file_size, version_number, project_id, created_at, updated_at
+       ) VALUES (?, ?, ?, 'videos/test.mp4', ?, ?, ?, ?, ?, ?, 'Ready', 1024, 1, ?, ?, ?)`,
       [
         params.id,
         params.title,
         `${params.title}.mp4`,
         params.editorId,
+        params.isRaw ? null : 2,
         params.adminId ?? null,
         params.uploadedById ?? null,
+        params.isRaw ? 1 : 0,
         params.status,
         params.projectId,
         params.createdAt,
@@ -66,7 +69,7 @@ function seed(database: RelationalDatabase): void {
   // ویدیوی تدوین‌گر دیگر با پروژه محرمانه — نباید در پوشه‌های تدوین‌گر ۱ شمرده شود
   video({ id: 2, title: 'تیزر فروشگاه', projectId: 2, editorId: 3, status: 'PendingReview', createdAt: '2026-01-03T00:00:00.000Z' });
   // فایل خام تصویربردار در همان پروژه دندان‌پزشکی
-  video({ id: 3, title: 'فایل خام دندان‌پزشکی', projectId: 1, editorId: 1, uploadedById: 4, status: 'PendingReview', createdAt: '2026-01-04T00:00:00.000Z' });
+  video({ id: 3, title: 'فایل خام دندان‌پزشکی', projectId: 1, editorId: 1, uploadedById: 4, isRaw: true, status: 'PendingReview', createdAt: '2026-01-04T00:00:00.000Z' });
   // ویدیوی قدیمی بدون پروژه
   video({ id: 4, title: 'ویدیوی آرشیوی', projectId: null, editorId: 1, status: 'Rejected', createdAt: '2026-01-05T00:00:00.000Z' });
 }
