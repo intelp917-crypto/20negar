@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import sys
 import time
 from pathlib import Path
@@ -94,6 +95,24 @@ def same_path(left: str | Path | None, right: str | Path | None) -> bool:
             os.path.normcase(str(Path(right).expanduser().resolve()))
     except (OSError, ValueError):
         return False
+
+
+def lan_addresses() -> list[str]:
+    """IPv4 addresses a router can forward to, loopback excluded."""
+    addresses: set[str] = set()
+    virtual = ("vethernet", "wsl", "hyper-v", "docker", "virtualbox", "vmware", "loopback")
+    try:
+        import psutil
+        for name, entries in psutil.net_if_addrs().items():
+            if any(marker in name.lower() for marker in virtual):
+                continue
+            for entry in entries:
+                if entry.family == socket.AF_INET and entry.address \
+                        and not entry.address.startswith(("127.", "169.254.")):
+                    addresses.add(entry.address)
+    except Exception:
+        pass
+    return sorted(addresses)
 
 
 def notice(text: str, tone: str = "accent") -> QLabel:
@@ -725,10 +744,25 @@ class NetworkPage(Page):
         self.mode = KeyValue("Mode", "—")
         self.interface = KeyValue("Bind address", "0.0.0.0 (all interfaces)")
         self.loopback = KeyValue("Local URL", "—")
+        self.lan = KeyValue("LAN URLs", "—")
         info.add(self.mode)
         info.add(self.interface)
         info.add(self.loopback)
+        info.add(self.lan)
         self.layout.addWidget(info)
+
+        remote = Card("Access from outside",
+                      "Forward the main port on the router to one of the LAN URLs above.")
+        self.public = KeyValue("Public URL (.env)", "—")
+        self.standard = KeyValue("Standard ports", "—")
+        remote.add(self.public)
+        remote.add(self.standard)
+        remote.add(_bullet("Test from mobile data, not from inside the LAN: many routers lack NAT loopback."))
+        remote.add(_bullet("If the router WAN address is private or 100.64.0.0/10, the ISP uses CGNAT "
+                           "and port forwarding cannot work without a dedicated public IP or a tunnel."))
+        remote.add(_bullet("Check the listener with: netstat -ano | findstr :<port> — it must show 0.0.0.0, "
+                           "not 127.0.0.1."))
+        self.layout.addWidget(remote)
 
     def on_state(self, state: dict) -> None:
         url = state.get("health_url") or ""
@@ -743,6 +777,14 @@ class NetworkPage(Page):
         self.port_chip.set_state(f"port {state.get('port', '—')}", "muted")
         self.mode.set(str(state.get("mode", "development")).title())
         self.loopback.set(url.replace("/api/health", "/") or "—")
+        port = state.get("port") or self.bridge.settings.get("port", 3000)
+        hosts = lan_addresses()
+        self.lan.set(", ".join(f"http://{host}:{port}" for host in hosts) or "no LAN address found")
+        env = self.bridge.server_env()
+        self.public.set(env.get("PUBLIC_URL") or "not set — same-origin access only")
+        standard = str(env.get("ENABLE_STANDARD_PORTS", "true")).lower() != "false"
+        self.standard.set(f"HTTP {env.get('HTTP_PORT', '80')} / HTTPS {env.get('SECURE_PORT', '443')}"
+                          if standard else "disabled")
 
     def set_probe(self, result: dict) -> None:
         ok = bool(result.get("ok"))
@@ -1055,6 +1097,7 @@ class TLSPage(Page):
 class StartupPage(Page):
     def build(self) -> None:
         status = self.bridge.startup_status()
+        self._status = status
         card = Card("Sign-in behaviour", "Per-user startup entries — no administrator rights required.")
         self.server = Switch("Start the 20Negar server when I sign in")
         self.server.setChecked(bool(status["server"]))
@@ -1064,15 +1107,51 @@ class StartupPage(Page):
         card.add(divider())
         card.add(self.manager)
         card.add(KeyValue("Startup folder", status["directory"]))
-        card.add_action(self.button("Apply startup settings", "startup", variant="primary", compact=True))
+        card.add(KeyValue("Server entry", status["server_path"]))
+        card.add(KeyValue("Server working folder", status["repo_root"]))
+        card.add(KeyValue("Server log", status["server_log"]))
+        self.command = KeyValue("Server command", status.get("server_command") or "—")
+        card.add(self.command)
+        self.state = Chip("checked on load", "muted")
+        row = QHBoxLayout()
+        row.addWidget(self.state)
+        row.addStretch(1)
+        card.add_layout(row)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        actions.addWidget(self.button("Apply startup settings", "startup", variant="primary", compact=True))
+        actions.addWidget(self.button("Open startup folder", "open_path", "startup", variant="ghost"))
+        actions.addWidget(self.button("Refresh", "refresh", variant="ghost"))
+        actions.addStretch(1)
+        card.add_layout(actions)
         self.layout.addWidget(card)
+
         note = Card("Notes")
         note.add(_bullet("The server entry starts the same Node command the manager uses."))
-        note.add(_bullet("Existing entries are never overwritten silently."))
+        note.add(_bullet("It runs from the repository root, so server.ts and .env are found at sign-in."))
+        note.add(_bullet("Applying rewrites both entries; stale paths from a moved checkout are repaired."))
+        note.add(_bullet("Sign-in output goes to the server log file instead of a window that closes instantly."))
         self.layout.addWidget(note)
+        self.on_state({})
 
     def values(self) -> dict:
         return {"manager": self.manager.isChecked(), "server": self.server.isChecked()}
+
+    def on_state(self, state: dict) -> None:
+        if not hasattr(self, "state"):
+            return
+        try:
+            status = self.bridge.startup_status()
+        except Exception:  # missing Node or an unreadable Startup folder
+            return
+        self._status = status
+        if not status["server"]:
+            self.state.set_state("server entry not installed", "muted")
+        elif status.get("server_current"):
+            self.state.set_state("server entry is current", "success")
+        else:
+            self.state.set_state("entry points elsewhere — apply to repair", "warning")
+        self.command.set(status.get("server_command") or "—")
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,6 @@
 import hashlib
+import shutil
+import subprocess
 from app.core.backup_manager import BackupManager
 from app.core.database_manager import DatabaseManager
 from app.core.storage_manager import StorageManager
@@ -32,6 +34,41 @@ def test_startup_and_checksum(tmp_path):
     p = tmp_path / "x"; p.write_bytes(b"abc")
     assert UpdateManager().verify_sha256(p, hashlib.sha256(b"abc").hexdigest())
 
+def test_startup_entry_runs_from_repo_with_env_and_log(tmp_path):
+    log = tmp_path / "logs" / "startup-server.log"
+    startup = StartupManager("server", ["node", "server.ts"], tmp_path / "startup",
+                             cwd=tmp_path, log_file=log,
+                             env={"PORT": "3000", "NEGAR_VIDEOS_DIR": r"D:\media 1%"})
+    path = startup.enable(overwrite=True)
+    text = path.read_text(encoding="utf-8")
+    assert f"cd /d {subprocess.list2cmdline([str(tmp_path)])}" in text
+    assert 'set "PORT=3000"' in text
+    assert "D:\\media 1%%" in text          # cmd would expand a lone percent sign
+    assert str(log) in text                    # sign-in output is kept for diagnosis
+    assert startup.current()
+    assert not StartupManager("server", ["node", "server.ts"], tmp_path / "startup",
+                              cwd=tmp_path / "moved").current()
+
+
+def test_bridge_startup_repairs_a_stale_entry(tmp_path, monkeypatch):
+    if not shutil.which("node"):
+        return
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    paths = replace(default_paths(tmp_path), config_dir=tmp_path / "config")
+    bridge = CoreBridge(paths)
+    startup_dir = tmp_path / "appdata" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup_dir.mkdir(parents=True)
+    entry = startup_dir / "20Negar-Server.cmd"
+    entry.write_text("@echo off\ncd /d C:\\old-checkout\nnode server.ts\n", encoding="utf-8")
+    status = bridge.startup_status()
+    assert not status["server_current"]
+    assert bridge.startup(True, True)["server_current"]
+    text = entry.read_text(encoding="utf-8")
+    assert f"cd /d {subprocess.list2cmdline([str(tmp_path)])}" in text
+    assert "C:\\old-checkout" not in text
+    assert bridge.startup_status()["server_current"]
+
+
 def test_storage_migration_verifies_and_keeps_source(tmp_path):
     paths = replace(default_paths(tmp_path), config_dir=tmp_path / "config")
     paths.storage_dir.mkdir(parents=True)
@@ -42,3 +79,4 @@ def test_storage_migration_verifies_and_keeps_source(tmp_path):
     assert result["ok"] and result["migrated"]
     assert (target / "nested/video.mp4").read_bytes() == b"video-bytes"
     assert source.exists() and bridge.paths.storage_dir == target.resolve()
+

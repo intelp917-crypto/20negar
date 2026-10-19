@@ -132,6 +132,27 @@ npm run lint
 - تنظیمات manager: `%APPDATA%\20negar-manager\settings.json`
 - `.env` در ریشه‌ی repository (در gitignore است)
 
+### Startup در ویندوز
+
+صفحه‌ی Startup دو فایل `.cmd` در پوشه‌ی Startup کاربر می‌سازد: یکی برای مدیر و یکی برای سرور. هر دو صریحاً `cd /d` به ریشه‌ی repository می‌زنند و نسخه‌ی سرور متغیرهای `PORT`/`NODE_ENV`/`NEGAR_*` را با `set` اعمال می‌کند؛ در غیر این صورت ویندوز فایل را با پوشه‌ی کاربر اجرا می‌کند، `server.ts` پیدا نمی‌شود و dotenv هم `.env` را نمی‌خواند. خروجی هر بار ورود به `data/logs/startup-server.log` نوشته می‌شود و در صورت خطا پنجره باز می‌ماند.
+
+- با هر بار Apply، هر دو فایل بازنویسی می‌شوند؛ پس جابه‌جایی repository یا تغییر مسیر ویدیوها با یک Apply درست می‌شود.
+- نشانگر «entry points elsewhere» یعنی فایل موجود به پوشه‌ی دیگری اشاره می‌کند؛ Apply را بزنید.
+- برای دیدن نتیجه‌ی اجرای واقعی، فایل `.cmd` را از پوشه‌ی Startup اجرا کنید یا `startup-server.log` را ببینید.
+
+## دسترسی از اینترنت (port forward)
+
+سرور روی `0.0.0.0` گوش می‌دهد، پس اگر از بیرون جواب نمی‌دهد مسئله bind نیست. این موارد را به ترتیب بررسی کنید:
+
+1. **از داخل شبکه با IP عمومی تست نکنید.** بسیاری از روترها NAT loopback ندارند؛ با موبایل روی داده‌ی همراه تست کنید.
+2. **IP عمومی واقعی را با WAN روتر مقایسه کنید.** اگر WAN در بازه‌ی خصوصی یا `100.64.0.0/10` است، اپراتور CGNAT دارد و forward کار نمی‌کند؛ راه‌حل: IP ثابت/پورت اختصاصی از اپراتور، VPN، یا Cloudflare Tunnel.
+3. **IP داخلی مقصد forward** باید همان IP فعلی سیستم باشد (DHCP را رزرو کنید). `ipconfig` و صفحه‌ی port-forward روتر را مقایسه کنید.
+4. **پورت روی همان میزبان باز است؟** `netstat -ano | findstr :3000` باید `0.0.0.0:3000 ... LISTENING` نشان دهد، نه `127.0.0.1`.
+5. **رزرو پورت توسط Hyper-V/WSL**: `netsh interface ipv4 show excludedportrange protocol=tcp`. اگر پورت داخل بازه‌ی رزرو است، EACCES می‌گیرید و سرور بالا نمی‌آید؛ پورت دیگری انتخاب کنید.
+6. **فایروال**: خاموش بودن فایروال کافی نیست؛ آنتی‌ویروس/فایروال شخص ثالث هم لایه‌ی فیلتر دارد. یک بار rule بسازید: `netsh advfirewall firewall add rule name="20Negar 3000" dir=in action=allow protocol=TCP localport=3000`.
+7. **در خود سرور چه چیزی listen شده؟** لاگ `[Network] LAN addresses available...` و پورت‌های HTTP/HTTPS را نشان می‌دهد. با `ENABLE_STANDARD_PORTS=true` پورت‌های ۸۰/۴۴۳ هم باز می‌شوند؛ اگر روتر فقط ۴۴۳ را forward کرده، آدرس را با `https://` باز کنید (گواهی self-signed هشدار می‌دهد).
+8. **پشت reverse proxy**: `TRUST_PROXY=true` را در `.env` تنظیم کنید و `PUBLIC_URL` را با آدرس عمومی (پروتکل + دامنه/آی‌پی) پر کنید تا CORS و لینک‌ها درست بسازند.
+
 ## ساختار
 
 - `app/ui/theme.py` — توکن‌های طراحی و stylesheet سراسری

@@ -76,6 +76,7 @@ class CoreBridge:
         self.log = LogManager(self.paths.logs_dir).logger()
         self.output: list[str] = []
         self.output_lock = threading.Lock()
+        self._repair_startup_entries()
 
     # ------------------------------------------------------------------
     # Settings and server environment
@@ -857,29 +858,66 @@ class CoreBridge:
     # ------------------------------------------------------------------
     # Startup, diagnostics, updates
     # ------------------------------------------------------------------
-    def startup_status(self) -> dict[str, Any]:
-        startup_dir = StartupManager("20Negar-Manager", []).startup_dir
-        manager = StartupManager("20Negar-Manager", [], startup_dir)
-        server = StartupManager("20Negar-Server", [], startup_dir)
-        return {"manager": manager.enabled(), "server": server.enabled(),
-                "directory": str(startup_dir), "manager_path": str(manager.shortcut_path),
-                "server_path": str(server.shortcut_path)}
+    def _startup_dir(self) -> Path:
+        return StartupManager("20Negar-Manager", []).startup_dir
 
-    def startup(self, manager_enabled: bool, server_enabled: bool) -> dict[str, Any]:
-        startup_dir = StartupManager("20Negar-Manager", []).startup_dir
+    def _startup_entries(self) -> tuple[StartupManager, StartupManager]:
+        """Both sign-in entries, always anchored at the repository this manager runs."""
+        startup_dir = self._startup_dir()
         manager_command = ([sys.executable] if getattr(sys, "frozen", False)
                            else [sys.executable, str(self.paths.repo_root / "manager" / "main.py")])
         server_command = ServerController.command_for_repo(self.paths.repo_root, self.settings["mode"])
-        manager = StartupManager("20Negar-Manager", manager_command, startup_dir)
-        server = StartupManager("20Negar-Server", server_command, startup_dir)
-        manager_path = manager.ensure() if manager_enabled else manager.disable() or manager.shortcut_path
-        server_path = server.ensure() if server_enabled else server.disable() or server.shortcut_path
+        manager = StartupManager("20Negar-Manager", manager_command, startup_dir,
+                                 cwd=self.paths.repo_root)
+        server = StartupManager("20Negar-Server", server_command, startup_dir,
+                                cwd=self.paths.repo_root, env=self._server_env(),
+                                log_file=self.paths.logs_dir / "startup-server.log")
+        return manager, server
+
+    def startup_dir(self) -> Path:
+        return self._startup_dir()
+
+    def _repair_startup_entries(self) -> None:
+        """Rewrite enabled sign-in entries that still point at another checkout.
+
+        Older builds wrote the entry without a working directory, so Windows ran
+        it from the user profile and the server never came up. Repairing on start
+        means an existing installation is fixed by simply opening the manager.
+        """
+        try:
+            manager, server = self._startup_entries()
+            if self.settings.get("start_gui_on_login") and not manager.current():
+                manager.enable(overwrite=True)
+                self.log.info("Refreshed the manager sign-in entry")
+            if self.settings.get("startup_server_enabled") and not server.current():
+                server.enable(overwrite=True)
+                self.log.info("Refreshed the server sign-in entry")
+        except (OSError, FileNotFoundError) as exc:
+            self.log.warning("Could not refresh the sign-in entries: %s", exc)
+
+    def startup_status(self) -> dict[str, Any]:
+        manager, server = self._startup_entries()
+        return {"manager": manager.enabled(), "server": server.enabled(),
+                "directory": str(manager.startup_dir), "manager_path": str(manager.shortcut_path),
+                "server_path": str(server.shortcut_path), "server_log": str(server.log_file),
+                "server_current": server.current(), "server_command": server.command_line(),
+                "repo_root": str(self.paths.repo_root)}
+
+    def startup(self, manager_enabled: bool, server_enabled: bool) -> dict[str, Any]:
+        manager, server = self._startup_entries()
+        # Apply always rewrites: a moved repository or a new videos folder must not
+        # leave a stale entry behind that silently starts the old configuration.
+        manager_path = manager.enable(overwrite=True) if manager_enabled else \
+            (manager.disable() or manager.shortcut_path)
+        server_path = server.enable(overwrite=True) if server_enabled else \
+            (server.disable() or server.shortcut_path)
         self.save_settings({"start_gui_on_login": manager_enabled,
                             "startup_server_enabled": server_enabled,
                             "startup_enabled": server_enabled})
         return {"ok": True, "manager_enabled": manager_enabled, "server_enabled": server_enabled,
                 "manager_path": str(manager_path), "server_path": str(server_path),
-                "directory": str(startup_dir)}
+                "directory": str(manager.startup_dir), "server_log": str(server.log_file),
+                "server_current": server.current() if server_enabled else False}
 
     def diagnostics(self) -> dict[str, Any]:
         return Diagnostics().collect(self.paths, self.settings, self.state())

@@ -113,6 +113,7 @@ class ServerController:
             raise FileNotFoundError("Node.js executable was not found")
         tsx = repo / "node_modules" / "tsx" / "dist" / "cli.mjs"
         if tsx.exists():
-            return [node_exe, str(tsx), "server.ts"]
+            # Absolute so a sign-in entry that starts elsewhere still resolves it.
+            return [node_exe, str(tsx), str(repo / "server.ts")]
         npm = shutil.which("npm.cmd" if os.name == "nt" else "npm") or "npm"
         return [npm, "run", "start" if mode == "production" else "dev"]

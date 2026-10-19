@@ -1027,6 +1027,7 @@ class MainWindow(QMainWindow):
             "database": self.bridge.paths.database.parent,
             "backups": self.bridge.paths.backups_dir,
             "config": self.bridge.store.path.parent,
+            "startup": self.bridge.startup_dir(),
         }
         target = mapping.get(name)
         if target is None:
