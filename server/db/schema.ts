@@ -413,4 +413,30 @@ export function runMigrations(database = db): void {
       [5, new Date().toISOString()]
     );
   }
+
+  // Migration 6: Web Push subscriptions (one row per browser/device installation).
+  // Like migration 5 it runs after the versioned list so the raw-footage schema
+  // change above can never be skipped on a fresh database.
+  const versionAfterRawFootage = database.queryOne<{ version: number }>(
+    'SELECT COALESCE(MAX(version), 0) as version FROM schema_migrations'
+  )?.version ?? 0;
+  if (versionAfterRawFootage < 6) {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth_key TEXT NOT NULL,
+        user_agent TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
+    `);
+    database.run(
+      'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
+      [6, new Date().toISOString()]
+    );
+  }
 }

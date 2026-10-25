@@ -9,10 +9,12 @@ createRoot(document.getElementById('root')!).render(<App />);
 // installability checks. Keep the deferred prompt available to the app UI.
 
 /**
- * Service worker registration — enables "Add to home screen" / install as app.
+ * Service worker registration — enables "Add to home screen" / install as app and
+ * receives Web Push notifications. It is also registered in development so that
+ * push can be tested on localhost (a secure context).
  * Failures are ignored: the app works fine without it.
  */
-if ('serviceWorker' in navigator && window.isSecureContext && import.meta.env.PROD) {
+if ('serviceWorker' in navigator && window.isSecureContext) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch((err) => {
       console.warn('[PWA] Service worker registration failed:', err);

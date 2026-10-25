@@ -41,3 +41,12 @@ PORT="3000"
 # Optional trusted certificate for HTTPS/PWA installation.
 # TLS_KEY_PATH="C:\\20negar\\data\\certs\\server.key"
 # TLS_CERT_PATH="C:\\20negar\\data\\certs\\server.crt"
+
+# ─── Web Push (اعلان روی گوشی با صدا) ──────────────────────────────────────────
+# VAPID keys are generated automatically on first use and stored in
+# <data>/vapid-keys.json. Set both values only when several servers must share
+# the same key pair (e.g. a load-balanced deployment).
+# Generate a pair with: node -e "console.log(require('web-push').generateVAPIDKeys())"
+# VAPID_PUBLIC_KEY=""
+# VAPID_PRIVATE_KEY=""
+# VAPID_SUBJECT="mailto:admin@example.com"

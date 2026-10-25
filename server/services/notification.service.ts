@@ -1,4 +1,5 @@
 import { db } from '../db/database.ts';
+import { pushService } from './push.service.ts';
 
 export interface NotificationDto {
   id: number;
@@ -26,6 +27,18 @@ export class NotificationService {
          VALUES (?, ?, ?, ?, 0, ?, ?)`,
         [userId, title, message, type, link, now]
       );
+
+      // اعلان درون‌برنامه‌ای ثبت شد؛ همان لحظه به دستگاه‌های ثبت‌شده هم پوش می‌شود.
+      // ارسال به‌صورت غیرمسدودکننده انجام می‌شود تا گردش‌کار ویدیو معطل شبکه نشود.
+      void pushService
+        .sendToUser(userId, {
+          title,
+          body: message,
+          url: link || '/',
+          type,
+          tag: `20negar-notification-${userId}`,
+        })
+        .catch((err: any) => console.warn('[NotificationService] Push delivery failed:', err?.message || err));
     } catch (err) {
       console.error('[NotificationService] Failed to create notification:', err);
     }

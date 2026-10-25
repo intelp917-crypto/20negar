@@ -35,6 +35,7 @@ import authRoutes from './server/routes/auth.routes.ts';
 import userRoutes from './server/routes/user.routes.ts';
 import videoRoutes from './server/routes/video.routes.ts';
 import notificationRoutes from './server/routes/notification.routes.ts';
+import pushRoutes from './server/routes/push.routes.ts';
 import auditRoutes from './server/routes/audit.routes.ts';
 import projectRoutes from './server/routes/project.routes.ts';
 import internalAccessRoutes from './server/routes/internal-access.routes.ts';
@@ -140,6 +141,7 @@ async function startServer() {
   app.use('/api', userRoutes); // support GET /api/editors, /api/supervisors
   app.use('/api/videos', videoRoutes);
   app.use('/api/notifications', notificationRoutes);
+  app.use('/api/push', pushRoutes);
   app.use('/api/audit-logs', auditRoutes);
   app.use('/api/projects', projectRoutes);
   app.use('/api/internal-access', internalAccessRoutes);

@@ -3,7 +3,17 @@ import { useAuth } from '../context/AuthContext.tsx';
 import { AppNotification, UserRole } from '../types/index.ts';
 import { api } from '../api/client.ts';
 import {
+  disablePush,
+  enablePush,
+  getPushState,
+  playNotificationChime,
+  sendTestPush,
+  syncPushSubscription,
+  type PushState,
+} from '../push.ts';
+import {
   Bell,
+  BellRing,
   CheckCircle2,
   AlertTriangle,
   Info,
@@ -14,6 +24,8 @@ import {
   Film,
   Crown,
   Network,
+  Smartphone,
+  Loader2,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -29,13 +41,25 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [internalUrl, setInternalUrl] = useState<string | null>(null);
   const [internalState, setInternalState] = useState<'unknown' | 'available' | 'unavailable'>('unknown');
+  const [pushState, setPushState] = useState<PushState | 'loading'>('loading');
+  const [pushDevices, setPushDevices] = useState(0);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushMessage, setPushMessage] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
   const notificationRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  // برای تشخیص اعلان تازه و پخش زنگ فقط یک بار برای هر اعلان.
+  const seenNotificationIds = useRef<Set<number> | null>(null);
 
   const fetchNotifications = async () => {
     try {
       const data = await api.getNotifications();
       setNotifications(data);
+
+      const seen = seenNotificationIds.current;
+      if (seen && data.some((n) => !n.isRead && !seen.has(n.id))) {
+        playNotificationChime();
+      }
+      seenNotificationIds.current = new Set(data.map((n) => n.id));
     } catch {
       // ignore
     }
@@ -46,6 +70,91 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
     const interval = setInterval(fetchNotifications, 10000);
     return () => clearInterval(interval);
   }, [user]);
+
+  const refreshPushState = async () => {
+    try {
+      const status = await getPushState();
+      setPushState(status.state);
+      setPushDevices(status.devices);
+    } catch {
+      setPushState('available');
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    // اگر همین مرورگر قبلاً مشترک شده، اشتراکش را به حساب کاربر جاری وصل کن.
+    syncPushSubscription()
+      .then(() => { if (active) return refreshPushState(); })
+      .catch(() => { if (active) setPushState('available'); });
+    return () => { active = false; };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || data.type !== '20negar:push-received') return;
+      playNotificationChime();
+      fetchNotifications();
+      refreshPushState();
+    };
+    navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+  }, [user?.id]);
+
+  const handleEnablePush = async () => {
+    setPushBusy(true);
+    setPushMessage(null);
+    try {
+      const result = await enablePush();
+      setPushState(result.state);
+      setPushDevices(result.devices);
+      if (result.state === 'subscribed') {
+        setPushMessage({ text: 'اعلان روی این دستگاه فعال شد. یک اعلان آزمایشی بفرستیم؟', tone: 'ok' });
+      } else if (result.state === 'denied') {
+        setPushMessage({ text: 'اجازه اعلان مسدود شده است؛ از تنظیمات مرورگر اجازه دهید.', tone: 'error' });
+      } else {
+        setPushMessage({ text: 'فعال‌سازی اعلان کامل نشد؛ دوباره تلاش کنید.', tone: 'error' });
+      }
+    } catch (err: any) {
+      setPushMessage({ text: err?.message || 'فعال‌سازی اعلان با خطا مواجه شد.', tone: 'error' });
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  const handleDisablePush = async () => {
+    setPushBusy(true);
+    setPushMessage(null);
+    try {
+      const result = await disablePush();
+      setPushState(result.state);
+      setPushDevices(result.devices);
+      setPushMessage({ text: 'اعلان روی این دستگاه غیرفعال شد.', tone: 'ok' });
+    } catch (err: any) {
+      setPushMessage({ text: err?.message || 'غیرفعال کردن اعلان با خطا مواجه شد.', tone: 'error' });
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  const handleTestPush = async () => {
+    setPushBusy(true);
+    setPushMessage(null);
+    try {
+      const sent = await sendTestPush();
+      setPushMessage({
+        text: sent > 0 ? 'اعلان آزمایشی ارسال شد؛ چند لحظه صبر کنید.' : 'دستگاه فعالی برای ارسال پیدا نشد.',
+        tone: sent > 0 ? 'ok' : 'error',
+      });
+    } catch (err: any) {
+      setPushMessage({ text: err?.message || 'ارسال اعلان آزمایشی با خطا مواجه شد.', tone: 'error' });
+    } finally {
+      setPushBusy(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -245,6 +354,83 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, setActiveTab })
                       </div>
                     </div>
                   ))
+                )}
+              </div>
+
+              {/* اعلان روی گوشی (Web Push) */}
+              <div className="border-t border-zinc-800 mt-1 pt-2.5 px-2.5 pb-1.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 font-bold text-zinc-300">
+                    <Smartphone className="w-3.5 h-3.5 text-purple-400" />
+                    اعلان روی گوشی
+                  </span>
+                  {pushState === 'subscribed' ? (
+                    <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400">
+                      <BellRing className="w-3 h-3" />
+                      فعال{pushDevices > 1 ? ` (${pushDevices} دستگاه)` : ''}
+                    </span>
+                  ) : pushState === 'loading' ? (
+                    <Loader2 className="w-3.5 h-3.5 text-zinc-500 animate-spin" />
+                  ) : null}
+                </div>
+
+                {pushState === 'insecure' && (
+                  <p className="text-[10px] leading-relaxed text-amber-300/90">
+                    برای دریافت اعلان روی گوشی، برنامه باید از طریق HTTPS معتبر باز شود.
+                  </p>
+                )}
+                {pushState === 'unsupported' && (
+                  <p className="text-[10px] leading-relaxed text-zinc-400">
+                    این مرورگر از اعلان پوش پشتیبانی نمی‌کند. در iPhone برنامه را به «صفحه اصلی» اضافه کنید (iOS 16.4+).
+                  </p>
+                )}
+                {pushState === 'unavailable' && (
+                  <p className="text-[10px] leading-relaxed text-rose-300/90">
+                    سرویس اعلان سرور در دسترس نیست؛ کلیدهای VAPID را بررسی کنید.
+                  </p>
+                )}
+                {pushState === 'denied' && (
+                  <p className="text-[10px] leading-relaxed text-rose-300/90">
+                    اجازه اعلان در تنظیمات مرورگر مسدود شده است؛ از تنظیمات سایت اجازه دهید و دوباره تلاش کنید.
+                  </p>
+                )}
+
+                {(pushState === 'available' || pushState === 'subscribed') && (
+                  <div className="flex items-center gap-2">
+                    {pushState === 'available' ? (
+                      <button
+                        onClick={handleEnablePush}
+                        disabled={pushBusy}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold transition-colors disabled:opacity-50"
+                      >
+                        {pushBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BellRing className="w-3.5 h-3.5" />}
+                        فعال‌سازی اعلان با صدا
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={handleTestPush}
+                          disabled={pushBusy}
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold border border-zinc-700 transition-colors disabled:opacity-50"
+                        >
+                          {pushBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bell className="w-3.5 h-3.5" />}
+                          ارسال آزمایشی
+                        </button>
+                        <button
+                          onClick={handleDisablePush}
+                          disabled={pushBusy}
+                          className="px-2.5 py-2 rounded-lg text-zinc-400 hover:text-rose-300 hover:bg-rose-500/10 border border-zinc-800 transition-colors disabled:opacity-50"
+                        >
+                          غیرفعال
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+                {pushMessage && (
+                  <p className={`text-[10px] leading-relaxed ${pushMessage.tone === 'ok' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {pushMessage.text}
+                  </p>
                 )}
               </div>
             </div>

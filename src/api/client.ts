@@ -1,4 +1,4 @@
-import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole, Project, ProjectFolder } from '../types/index.ts';
+import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole, Project, ProjectFolder, NewProjectInput } from '../types/index.ts';
 import { Upload as TusUpload } from 'tus-js-client';
 
 const TOKEN_KEY = 'cineflow_auth_token';
@@ -303,6 +303,8 @@ export const api = {
   getSupervisors: () => request<User[]>('/api/supervisors'),
   getProjects: () => request<Project[]>('/api/projects'),
   getProjectFolders: () => request<ProjectFolder[]>('/api/projects/folders'),
+  createProject: (input: NewProjectInput) =>
+    request<Project>('/api/projects', { method: 'POST', body: JSON.stringify(input) }),
   getAdmins: () => request<User[]>('/api/admins'),
   getAllUsers: () => request<User[]>('/api/users'),
 
@@ -367,6 +369,17 @@ export const api = {
   getJobStatus: (videoId: number) => request<any>(`/api/videos/${videoId}/job-status`),
 
   getAdminStats: () => request<AdminStats>('/api/videos/stats'),
+
+  /**
+   * ساخت رکورد ویدیو از فایل کامل‌شده TUS.
+   * جریان Uppy+TUS: فایل با TUS آپلود می‌شود و سپس شناسه نشست همین‌جا به
+   * رکورد ویدیو تبدیل می‌شود.
+   */
+  createVideoFromUpload: (uploadId: string, fields: Record<string, string>) =>
+    request<Video>('/api/videos', {
+      method: 'POST',
+      body: JSON.stringify({ uploadId, ...fields }),
+    }),
 
   // ---- آپلود TUS (پروتکل استاندارد tus.io: سریع، ازسره‌گیر، مقاوم در برابر قطعی) ----
   uploadVideo: (formData: FormData, onProgress?: (percent: number) => void) => {
@@ -467,6 +480,22 @@ export const api = {
     request<{ success: boolean }>(`/api/notifications/${id}/read`, { method: 'PUT' }),
   markAllNotificationsRead: () =>
     request<{ success: boolean }>('/api/notifications/read-all', { method: 'PUT' }),
+
+  // Web Push (اعلان روی گوشی با صدا)
+  getPushPublicKey: () => request<{ publicKey: string }>('/api/push/public-key'),
+  getPushStatus: () => request<{ available: boolean; devices: number }>('/api/push/status'),
+  subscribePush: (subscription: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    request<{ success: boolean; devices: number }>('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ subscription }),
+    }),
+  unsubscribePush: (endpoint: string) =>
+    request<{ success: boolean; devices: number }>('/api/push/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    }),
+  sendTestPush: () =>
+    request<{ success: boolean; sent: number; failed: number }>('/api/push/test', { method: 'POST' }),
 
   // Audit Logs
   getAuditLogs: (params: { limit?: number; action?: string } = {}) => {

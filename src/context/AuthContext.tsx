@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types/index.ts';
 import { api, getStoredToken, setStoredToken } from '../api/client.ts';
 import { invalidateProjectCache } from '../api/projectCache.ts';
+import { detachPushSubscription } from '../push.ts';
 
 interface AuthContextType {
   user: User | null;
@@ -59,6 +60,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     try {
+      // پیش از پاک‌شدن توکن، دستگاه از اعلان‌های این حساب جدا می‌شود تا
+      // کاربر بعدی/خروج‌کرده اعلان حساب قبلی را دریافت نکند.
+      await detachPushSubscription();
       await api.logout();
     } catch {
       // ignore
