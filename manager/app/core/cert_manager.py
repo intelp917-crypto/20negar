@@ -16,6 +16,7 @@ import datetime as dt
 import ipaddress
 import json
 import socket
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,6 +28,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from .acme import AcmeClient, AcmeError, ChallengeHandler, PRODUCTION_DIRECTORY, STAGING_DIRECTORY
+from .lego import ensure_lego_binary
 
 CHALLENGE_PREFIX = "/.well-known/acme-challenge/"
 
@@ -90,7 +92,7 @@ class LocalPortResponder(ChallengeHandler):
                 self.end_headers()
                 self.wfile.write(payload)
 
-            def log_message(self, *_args) -> None:  # keep the console quiet
+            def log_message(self, format: str, *args) -> None:  # keep the console quiet
                 return
 
         try:
@@ -300,6 +302,55 @@ class CertificateManager:
         self._write_pair(certificate, key, archive / "fullchain.pem", archive / "privkey.pem")
         self._write_pair(certificate, key, self.cert_path, self.key_path)
         self._write_meta("letsencrypt", domain, directory)
+        return self.status()
+
+    def issue_with_lego(self, identifier: str, email: str | None = None,
+                        staging: bool = False, server_running: bool = True,
+                        runner=None) -> dict[str, Any]:
+        """Issue a DNS or public-IP certificate through the official lego CLI."""
+        identifier = str(identifier or "").strip().lower().rstrip(".")
+        try:
+            ipaddress.ip_address(identifier)
+            is_ip = True
+        except ValueError:
+            is_ip = False
+        if not identifier or any(char.isspace() for char in identifier) or "/" in identifier:
+            raise CertificateError(f"Invalid domain or public IP: {identifier!r}")
+
+        directory = STAGING_DIRECTORY if staging else PRODUCTION_DIRECTORY
+        lego_root = self.certs_dir.parent / "lego"
+        binary = ensure_lego_binary(self.certs_dir.parent / "tools")
+        command = [str(binary), "run", "--accept-tos", "--domains", identifier,
+                   "--http", "--path", str(lego_root), "--server", directory]
+        if email:
+            command.extend(["--email", str(email).strip()])
+        if is_ip:
+            command.extend(["--profile", "shortlived", "--ipv4only"])
+        if server_running:
+            command.extend(["--http.webroot", str(self.webroot)])
+
+        if runner is None:
+            runner = subprocess.run
+        try:
+            completed = runner(command, cwd=str(self.certs_dir.parent), capture_output=True,
+                               text=True, timeout=300, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CertificateError(f"Could not run lego: {exc}") from exc
+        output = "\n".join(part for part in (getattr(completed, "stdout", ""), getattr(completed, "stderr", "")) if part)
+        if getattr(completed, "returncode", 1) != 0:
+            raise CertificateError(output[-4000:] or "lego could not obtain the certificate.")
+
+        source_dir = lego_root / "certificates"
+        source_cert = source_dir / f"{identifier}.crt"
+        source_key = source_dir / f"{identifier}.key"
+        if not source_cert.exists() or not source_key.exists():
+            raise CertificateError("lego completed without producing the expected certificate files.")
+        certificate = source_cert.read_bytes()
+        key = source_key.read_bytes()
+        self._write_pair(certificate, key, self.cert_path, self.key_path)
+        archive = self.certs_dir / "letsencrypt" / identifier
+        self._write_pair(certificate, key, archive / "fullchain.pem", archive / "privkey.pem")
+        self._write_meta("letsencrypt", identifier, directory)
         return self.status()
 
     def needs_renewal(self, threshold_days: int = 30) -> bool:

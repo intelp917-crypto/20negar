@@ -5,15 +5,32 @@ import { VideoService, VideoWorkflowError } from '../services/video.service.ts';
 import { TranscoderService } from '../services/transcoder.service.ts';
 import { fileStorage } from '../storage/local.storage.ts';
 import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
-import { videoUpload } from '../middleware/upload.middleware.ts';
+import { videoUpload, reviewVoiceUpload } from '../middleware/upload.middleware.ts';
 import { PRIVATE_VIDEOS_DIR, PRIVATE_HLS_DIR } from '../config.ts';
 import { AuditService } from '../services/audit.service.ts';
 import { streamFromTransferEngine } from '../services/transfer.service.ts';
 import { resolveVideoProject, ProjectSelectionError } from '../services/project.service.ts';
 import { normalizeUploadFilename } from '../services/upload.service.ts';
+import { db } from '../db/database.ts';
+import { STORAGE_DIR } from '../config.ts';
 import { loadSession as loadChunkSession, dataFile as chunkDataFile, cleanupSession as cleanupChunkSession } from './upload.routes.ts';
 
 const router = Router();
+
+function mediaTypeFor(filename: string, mimeType?: string): 'video' | 'image' {
+  return String(mimeType || '').toLowerCase().startsWith('image/') || /\.(avif|bmp|gif|heic|heif|jpeg|jpg|png|svg|tif|tiff|webp)$/i.test(filename)
+    ? 'image'
+    : 'video';
+}
+
+function contentTypeFor(filename: string, mediaType: 'video' | 'image'): string {
+  if (mediaType === 'video') {
+    const ext = path.extname(filename).toLowerCase();
+    return ({ '.webm': 'video/webm', '.ogg': 'video/ogg', '.ogv': 'video/ogg', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska' } as Record<string, string>)[ext] || 'video/mp4';
+  }
+  const ext = path.extname(filename).toLowerCase();
+  return ({ '.avif': 'image/avif', '.bmp': 'image/bmp', '.gif': 'image/gif', '.heic': 'image/heic', '.heif': 'image/heif', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg', '.png': 'image/png', '.svg': 'image/svg+xml', '.tif': 'image/tiff', '.tiff': 'image/tiff', '.webp': 'image/webp' } as Record<string, string>)[ext] || 'application/octet-stream';
+}
 
 /**
  * فایل آپلودشده با سیستم چانکی موازی را به فایل موقت استاندارد تبدیل می‌کند
@@ -191,6 +208,7 @@ router.post(
 
       const targetFileName = `orig_${Date.now()}_${path.basename(originalName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       const destinationKey = `videos/${targetFileName}`;
+      const mediaType = mediaTypeFor(originalName, req.body.fileType || req.headers['content-type']);
 
       // Move uploaded file from temp to private storage
       await fileStorage.storeLocalFile(tempPath, destinationKey);
@@ -200,6 +218,7 @@ router.post(
         title: title.trim(),
         originalFilename: originalName,
         originalPath: destinationKey,
+        mediaType,
         fileSize,
         editorId: req.user!.id,
         supervisorId: isCameraman ? null : parseInt(supervisorId, 10),
@@ -269,6 +288,7 @@ router.post(
 
       const targetFileName = `orig_v${parentVideo.versionNumber + 1}_${Date.now()}_${path.basename(originalName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       const destinationKey = `videos/${targetFileName}`;
+      const mediaType = mediaTypeFor(originalName, req.body.fileType || req.headers['content-type']);
 
       await fileStorage.storeLocalFile(tempPath, destinationKey);
       if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
@@ -280,6 +300,7 @@ router.post(
         title,
         originalFilename: originalName,
         originalPath: destinationKey,
+        mediaType,
         fileSize,
         editorId: req.user!.id,
         supervisorId,
@@ -384,6 +405,7 @@ router.post(
 
       const targetFileName = `edited_${videoId}_${Date.now()}_${path.basename(originalName).replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       storedKey = `videos/${targetFileName}`;
+      const mediaType = mediaTypeFor(originalName, req.body.fileType || req.headers['content-type']);
       await fileStorage.storeLocalFile(tempPath, storedKey);
       if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
 
@@ -398,6 +420,7 @@ router.post(
         {
           originalFilename: originalName,
           originalPath: storedKey,
+          mediaType,
           fileSize,
           supervisorId,
           title: req.body.title,
@@ -435,7 +458,7 @@ router.post(
 );
 
 // POST /api/videos/:id/approve - Supervisor or SuperAdmin approval (with optional target admin)
-router.post('/:id/approve', authenticate, requireRole(['Supervisor', 'SuperAdmin']), (req: Request, res: Response): void => {
+router.post('/:id/approve', authenticate, requireRole(['Supervisor', 'SuperAdmin']), reviewVoiceUpload.single('voice'), (req: Request, res: Response): void => {
   try {
     const videoId = parseInt(req.params.id, 10);
     const { comment, adminId } = req.body;
@@ -444,7 +467,8 @@ router.post('/:id/approve', authenticate, requireRole(['Supervisor', 'SuperAdmin
       videoId,
       { id: req.user!.id, displayName: req.user!.displayName, ipAddress: req.ip, role: req.user!.role },
       comment,
-      rawAdmin && !Number.isNaN(rawAdmin) ? rawAdmin : null
+      rawAdmin && !Number.isNaN(rawAdmin) ? rawAdmin : null,
+      req.file?.path || null
     );
     res.json(updated);
   } catch (err: any) {
@@ -453,7 +477,7 @@ router.post('/:id/approve', authenticate, requireRole(['Supervisor', 'SuperAdmin
 });
 
 // POST /api/videos/:id/reject - Supervisor or SuperAdmin rejection
-router.post('/:id/reject', authenticate, requireRole(['Supervisor', 'SuperAdmin']), (req: Request, res: Response): void => {
+router.post('/:id/reject', authenticate, requireRole(['Supervisor', 'SuperAdmin']), reviewVoiceUpload.single('voice'), (req: Request, res: Response): void => {
   try {
     const videoId = parseInt(req.params.id, 10);
     const { reason } = req.body;
@@ -464,7 +488,8 @@ router.post('/:id/reject', authenticate, requireRole(['Supervisor', 'SuperAdmin'
     const updated = VideoService.rejectVideo(
       videoId,
       { id: req.user!.id, displayName: req.user!.displayName, ipAddress: req.ip, role: req.user!.role },
-      reason.trim()
+      reason.trim(),
+      req.file?.path || null
     );
     res.json(updated);
   } catch (err: any) {
@@ -562,6 +587,25 @@ router.get('/:id/thumbnail', authenticate, (req: Request, res: Response): void =
   }
 });
 
+// GET /api/videos/:id/reviews/:reviewId/voice - secure supervisor voice note
+router.get('/:id/reviews/:reviewId/voice', authenticate, (req: Request, res: Response): void => {
+  try {
+    const videoId = parseInt(req.params.id, 10);
+    const reviewId = parseInt(req.params.reviewId, 10);
+    if (!VideoService.getVideoById(videoId, req.user!)) {
+      res.status(404).json({ error: 'دسترسی به فایل صوتی مجاز نیست.' });
+      return;
+    }
+    const row = db.queryOne<any>('SELECT voice_note_path FROM video_reviews WHERE id = ? AND video_id = ?', [reviewId, videoId]);
+    if (!row?.voice_note_path) { res.status(404).json({ error: 'فایل صوتی یافت نشد.' }); return; }
+    const storageRoot = path.resolve(STORAGE_DIR);
+    const fullPath = path.resolve(storageRoot, row.voice_note_path);
+    if (!fullPath.startsWith(storageRoot + path.sep) || !fs.existsSync(fullPath)) { res.status(404).end(); return; }
+    res.setHeader('Content-Type', contentTypeFor(row.voice_note_path, 'video').replace('video/mp4', 'audio/webm'));
+    fs.createReadStream(fullPath).pipe(res);
+  } catch { res.status(500).json({ error: 'خطا در دریافت فایل صوتی.' }); }
+});
+
 // GET /api/videos/:id/stream - Secure original-file streaming with HTTP Range support
 router.get('/:id/stream', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
@@ -612,13 +656,13 @@ router.get('/:id/stream', authenticate, async (req: Request, res: Response): Pro
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
-        'Content-Type': 'video/mp4',
+        'Content-Type': contentTypeFor(video.originalFilename, video.mediaType),
       });
       fileStream.pipe(res);
     } else {
       res.writeHead(200, {
         'Content-Length': fileSize,
-        'Content-Type': 'video/mp4',
+        'Content-Type': contentTypeFor(video.originalFilename, video.mediaType),
         'Accept-Ranges': 'bytes',
       });
       fs.createReadStream(targetFile).pipe(res);
@@ -738,7 +782,7 @@ router.get('/:id/download', authenticate, async (req: Request, res: Response): P
 
     const stat = fs.statSync(targetFile);
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadFilename)}"`);
-    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Type', contentTypeFor(downloadFilename, video.mediaType));
     res.setHeader('Content-Length', stat.size);
 
     fs.createReadStream(targetFile).pipe(res);

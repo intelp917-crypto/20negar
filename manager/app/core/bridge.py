@@ -8,6 +8,7 @@ in sync so a path change really changes where the server writes.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -1107,10 +1108,10 @@ class CoreBridge:
                 values["tls_domain"] = str(self.certificates().status().get("domain") or "")
             self.settings = self.save_settings(values, sync_env=False)
             if not values["tls_domain"]:
-                return {"ok": False, "message": "A domain name is required."}
+                return {"ok": False, "message": "A domain or public IP address is required."}
             running = self._server_is_up()
             try:
-                status = self.certificates().issue(
+                status = self.certificates().issue_with_lego(
                     values["tls_domain"], values["tls_email"] or None,
                     staging=values["tls_staging"], server_running=running)
             except Exception as exc:
@@ -1137,6 +1138,13 @@ class CoreBridge:
         if status.get("kind") != "letsencrypt":
             return {"ok": True, "renewed": False, "reason": "not-managed", "status": status}
         threshold = int(self.settings.get("tls_autorenew_days", 30) or 30)
+        # IP certificates are short-lived; never wait for the user-configured
+        # DNS threshold to become meaningful for an IP identity.
+        try:
+            ipaddress.ip_address(str(status.get("domain") or ""))
+            threshold = min(threshold, 3)
+        except ValueError:
+            pass
         days_left = status.get("days_left")
         if days_left is None or int(days_left) > threshold:
             self.save_settings({"tls_last_check": time.time()}, sync_env=False)

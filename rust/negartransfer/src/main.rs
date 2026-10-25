@@ -36,7 +36,7 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
-const MAX_FILE_SIZE: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB
+const MAX_FILE_SIZE: u64 = 8 * 1024 * 1024 * 1024; // 8 GiB
 const DEFAULT_CHUNK_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
 const MIN_CHUNK_SIZE: u64 = 64 * 1024;
 const MAX_CHUNK_SIZE: u64 = 64 * 1024 * 1024;

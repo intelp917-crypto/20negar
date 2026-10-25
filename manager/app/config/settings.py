@@ -33,6 +33,8 @@ DEFAULT_SETTINGS = {
     "tls_email": "",
     "tls_staging": False,
     "tls_autorenew": True,
+    # IP certificates are short-lived (roughly six days); 30 days is kept for
+    # DNS certificates but the bridge clamps IP renewal checks to a safe value.
     "tls_autorenew_days": 30,
     "tls_last_check": 0.0,
 }

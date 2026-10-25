@@ -41,6 +41,7 @@ import projectRoutes from './server/routes/project.routes.ts';
 import internalAccessRoutes from './server/routes/internal-access.routes.ts';
 import uploadRoutes from './server/routes/upload.routes.ts';
 import tusRoutes from './server/routes/tus.routes.ts';
+import chatRoutes from './server/routes/chat.routes.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -148,6 +149,7 @@ async function startServer() {
   app.use('/api/chunked-uploads', uploadRoutes);
   // آپلود TUS (پروتکل استاندارد ازسره‌گیر — سریع و مقاوم در برابر قطعی)
   app.use('/api/tus', tusRoutes);
+  app.use('/api/chat', chatRoutes);
 
   // Health check
   const instanceId = crypto.randomBytes(32).toString('hex');

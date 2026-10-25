@@ -5,6 +5,9 @@ import { NotificationService } from './notification.service.ts';
 import { canReviewVideo } from '../authorization/policy.ts';
 import { TranscoderService } from './transcoder.service.ts';
 import { ProjectDto } from './project.service.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import { STORAGE_DIR } from '../config.ts';
 
 export interface VideoQualityDto {
   id: number;
@@ -24,6 +27,7 @@ export interface VideoReviewDto {
   editorName: string;
   action: 'Approved' | 'Rejected';
   comment: string;
+  voiceNotePath: string | null;
   createdAt: string;
 }
 
@@ -39,6 +43,7 @@ export interface VideoDto {
   title: string;
   originalFilename: string;
   originalPath: string;
+  mediaType: 'video' | 'image';
   thumbnailPath: string | null;
   editorId: number;
   editorName: string;
@@ -110,6 +115,7 @@ export class VideoService {
     let sql = `
       SELECT 
         v.id, v.title, v.original_filename as originalFilename, v.original_path as originalPath,
+        v.media_type as mediaType,
         v.thumbnail_path as thumbnailPath, v.editor_id as editorId,
         ed.display_name as editorName, ed.username as editorUsername,
         v.supervisor_id as supervisorId,
@@ -209,7 +215,8 @@ export class VideoService {
   public static getVideoById(videoId: number, user: { id: number; role: UserRole }): VideoDto | null {
     const sql = `
       SELECT 
-        v.id, v.title, v.original_filename as originalFilename, v.original_path as originalPath,
+         v.id, v.title, v.original_filename as originalFilename, v.original_path as originalPath,
+         v.media_type as mediaType,
         v.thumbnail_path as thumbnailPath, v.editor_id as editorId,
         ed.display_name as editorName, ed.username as editorUsername,
         v.supervisor_id as supervisorId,
@@ -268,7 +275,7 @@ export class VideoService {
       `SELECT 
         r.id, r.video_id as videoId, r.supervisor_id as supervisorId,
         sp.display_name as supervisorName, r.editor_id as editorId,
-        ed.display_name as editorName, r.action, r.comment, r.created_at as createdAt
+        ed.display_name as editorName, r.action, r.comment, r.voice_note_path as voiceNotePath, r.created_at as createdAt
        FROM video_reviews r
        JOIN users sp ON r.supervisor_id = sp.id
        JOIN users ed ON r.editor_id = ed.id
@@ -307,6 +314,7 @@ export class VideoService {
     originalFilename: string;
     originalPath: string;
     fileSize: number;
+    mediaType?: 'video' | 'image';
     editorId: number;
     supervisorId?: number | null;
     uploadedById?: number | null;
@@ -346,14 +354,15 @@ export class VideoService {
 
     const res = db.run(
       `INSERT INTO videos (
-         title, original_filename, original_path, editor_id, supervisor_id, uploaded_by_id, project_id,
+         title, original_filename, original_path, media_type, editor_id, supervisor_id, uploaded_by_id, project_id,
         is_raw, status, processing_status, file_size, version_number, parent_video_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         params.title,
         params.originalFilename,
         params.originalPath,
+        params.mediaType || 'video',
         params.editorId,
         isRaw ? null : params.supervisorId ?? null,
         params.uploadedById ?? null,
@@ -498,7 +507,8 @@ export class VideoService {
     videoId: number,
     supervisor: { id: number; displayName: string; ipAddress?: string; role?: UserRole },
     comment?: string,
-    adminId?: number | null
+    adminId?: number | null,
+    voiceNoteTempPath?: string | null
   ): VideoDto {
     const video = db.queryOne<any>('SELECT * FROM videos WHERE id = ?', [videoId]);
     if (!video) throw new Error('ویدیو یافت نشد.');
@@ -538,6 +548,7 @@ export class VideoService {
        VALUES (?, ?, ?, 'Approved', ?, ?)`,
       [videoId, supervisor.id, video.editor_id, comment || 'تایید شده توسط ناظر کیفی استودیو ۲۰نگار', now]
     );
+    this.persistVoiceNote(videoId, voiceNoteTempPath);
 
     // Log audit
     AuditService.log(
@@ -583,7 +594,8 @@ export class VideoService {
   public static rejectVideo(
     videoId: number,
     supervisor: { id: number; displayName: string; ipAddress?: string; role?: UserRole },
-    rejectionReason: string
+    rejectionReason: string,
+    voiceNoteTempPath?: string | null
   ): VideoDto {
     if (!rejectionReason || !rejectionReason.trim()) {
       throw new Error('ثبت دلیل رد پروژه الزامی است.');
@@ -613,6 +625,7 @@ export class VideoService {
        VALUES (?, ?, ?, 'Rejected', ?, ?)`,
       [videoId, supervisor.id, video.editor_id, rejectionReason.trim(), now]
     );
+    this.persistVoiceNote(videoId, voiceNoteTempPath);
 
     // Log audit
     AuditService.log(
@@ -634,6 +647,19 @@ export class VideoService {
     );
 
     return this.getVideoById(videoId, { id: supervisor.id, role: supervisor.role || 'Supervisor' })!;
+  }
+
+  private static persistVoiceNote(videoId: number, tempPath?: string | null): void {
+    if (!tempPath || !fs.existsSync(tempPath)) return;
+    const review = db.queryOne<{ id: number }>('SELECT id FROM video_reviews WHERE video_id = ? ORDER BY id DESC LIMIT 1', [videoId]);
+    if (!review) return;
+    const extension = path.extname(tempPath).toLowerCase() || '.webm';
+    const relative = `review-voices/review_${review.id}${extension}`;
+    const destination = path.join(STORAGE_DIR, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(tempPath, destination);
+    fs.unlinkSync(tempPath);
+    db.run('UPDATE video_reviews SET voice_note_path = ? WHERE id = ?', [relative.replace(/\\/g, '/'), review.id]);
   }
 
   public static assignEditor(_videoId: number, _newEditorId: number, _user: { id: number; role: UserRole; displayName: string; ipAddress?: string }): VideoDto {
@@ -838,6 +864,7 @@ export class VideoService {
       originalFilename: string;
       originalPath: string;
       fileSize: number;
+      mediaType?: 'video' | 'image';
       supervisorId: number;
       title?: string;
     }
@@ -875,7 +902,7 @@ export class VideoService {
     const now = new Date().toISOString();
     db.run(
       `UPDATE videos
-          SET title = ?, original_filename = ?, original_path = ?, file_size = ?,
+           SET title = ?, original_filename = ?, original_path = ?, media_type = ?, file_size = ?,
               supervisor_id = ?, is_raw = 0, status = 'PendingReview', processing_status = 'Ready',
               version_number = version_number + 1, editor_id = ?,
               editing_claimed_by_id = NULL, editing_claimed_at = NULL,
@@ -886,6 +913,7 @@ export class VideoService {
         input.title?.trim() || video.title,
         input.originalFilename,
         input.originalPath,
+        input.mediaType || 'video',
         input.fileSize,
         supervisor.id,
         editor.id,

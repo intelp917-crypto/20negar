@@ -940,7 +940,7 @@ class UpdatesPage(Page):
 
 
 class TLSPage(Page):
-    """HTTPS certificates: self-signed for LAN, Let's Encrypt for a domain."""
+    """HTTPS certificates: self-signed for LAN, lego/Let's Encrypt for DNS or IP."""
 
     def build(self) -> None:
         self.header.add(self.button("↻  Refresh", "tls_status", variant="ghost"))
@@ -964,7 +964,7 @@ class TLSPage(Page):
             chips.addWidget(chip)
         chips.addStretch(1)
         status.add_layout(chips)
-        self.domain = KeyValue("Domain", "—")
+        self.domain = KeyValue("Domain / public IP", "—")
         self.issuer = KeyValue("Issuer", "—")
         self.expires = KeyValue("Valid until", "—")
         self.names = KeyValue("Covered names", "—")
@@ -982,19 +982,19 @@ class TLSPage(Page):
         status.add_layout(actions)
         self.layout.addWidget(status)
 
-        le = Card("Let's Encrypt",
-                  "A free, trusted certificate that renews itself before expiry.")
+        le = Card("Let's Encrypt via lego",
+                  "Works without Docker or a domain when your public IP is reachable from the internet.")
         form = QFormLayout()
         form.setHorizontalSpacing(24)
         form.setVerticalSpacing(12)
         self.domain_edit = QLineEdit(str(self.bridge.settings.get("tls_domain", "")))
-        self.domain_edit.setPlaceholderText("studio.example.com")
+        self.domain_edit.setPlaceholderText("studio.example.com or 203.0.113.10")
         self.email_edit = QLineEdit(str(self.bridge.settings.get("tls_email", "")))
         self.email_edit.setPlaceholderText("admin@example.com")
         for field in (self.domain_edit, self.email_edit):
             field.setMaximumWidth(420)
             field.setClearButtonEnabled(True)
-        form.addRow("Domain", self.domain_edit)
+        form.addRow("Domain / public IP", self.domain_edit)
         form.addRow("Account email", self.email_edit)
         le.add_layout(form)
         self.staging = Switch("Use the staging endpoint (test certificates, not trusted)")
@@ -1031,13 +1031,12 @@ class TLSPage(Page):
 
         notes = Card("Before requesting a certificate")
         for text in (
-            "Point the domain's DNS A/AAAA record at this server's public IP.",
-            "Let's Encrypt validates over HTTP on port 80: enable standard ports and forward 80/443.",
-            "The certificate is installed for server/tls.ts and HTTPS is reloaded by a restart.",
-            "Port 80 must not be blocked by another service; the manager can answer the challenge "
-            "itself only while the studio server is stopped.",
-            "Let's Encrypt does not issue certificates for some sanctioned regions; if validation "
-            "fails with a connection error, use a self-signed certificate or a commercial CA.",
+            "Enter either a DNS name or the public IPv4 address that clients use to open the studio.",
+            "For an IP certificate, Let's Encrypt uses a short-lived certificate and lego renews it frequently.",
+            "Forward public TCP port 80 to this computer for HTTP-01 validation; forwarding only port 3000 is not enough.",
+            "Forward public TCP 443 to the HTTPS listener, or keep the manager's standard ports enabled.",
+            "The certificate is installed for server/tls.ts and the server is restarted to load it.",
+            "If the ISP uses CGNAT, direct validation cannot work; use a real public IP or a tunnel.",
         ):
             notes.add(_bullet(text))
         self.layout.addWidget(notes)

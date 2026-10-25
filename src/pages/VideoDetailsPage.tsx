@@ -282,12 +282,18 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
           )}
 
           <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-2 sm:p-3 shadow-xl">
-            <VideoPlayer
-              videoId={video.id}
-              title={video.title}
-              posterUrl={video.thumbnailPath ? api.getThumbnailUrl(video.id) : undefined}
-              autoPlay={true}
-            />
+            {video.mediaType === 'image' ? (
+              <div className="aspect-video bg-zinc-950 rounded-2xl flex items-center justify-center overflow-hidden">
+                <img src={api.getStreamUrl(video.id)} alt={video.title} className="max-h-full max-w-full object-contain" />
+              </div>
+            ) : (
+              <VideoPlayer
+                videoId={video.id}
+                title={video.title}
+                posterUrl={video.thumbnailPath ? api.getThumbnailUrl(video.id) : undefined}
+                autoPlay={true}
+              />
+            )}
           </div>
 
           {/* Supervisor & SuperAdmin Decision Station */}
@@ -371,9 +377,8 @@ export const VideoDetailsPage: React.FC<VideoDetailsPageProps> = ({
                         {new Date(rev.createdAt).toLocaleString('fa-IR')}
                       </span>
                     </div>
-                    <p className="text-zinc-300 italic bg-zinc-950/60 p-3 rounded-xl border border-zinc-800/60 mt-1 leading-relaxed">
-                      "{rev.comment}"
-                    </p>
+                     <p className="text-zinc-300 italic bg-zinc-950/60 p-3 rounded-xl border border-zinc-800/60 mt-1 leading-relaxed">"{rev.comment}"</p>
+                     {rev.voiceNotePath && <audio controls src={`/api/videos/${video.id}/reviews/${rev.id}/voice?token=${encodeURIComponent(localStorage.getItem('cineflow_auth_token') || '')}`} className="w-full h-9 mt-2" />}
                   </div>
                 ))}
               </div>

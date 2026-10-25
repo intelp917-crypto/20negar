@@ -53,6 +53,10 @@ export const ACME_WEBROOT_DIR = path.resolve(process.env.NEGAR_ACME_WEBROOT || p
  */
 export const TRANSCODER_ENABLED = /^(1|true|yes)$/i.test((process.env.NEGAR_TRANSCODER_ENABLED || '').trim());
 
+/** Shared upload policy used by every transport and the UI. */
+export const MAX_UPLOAD_FILE_SIZE = 8 * 1024 * 1024 * 1024;
+export const MAX_UPLOAD_FILES = 100;
+
 // Ensure base directories exist. The database file may live outside DATA_DIR
 // (the desktop manager can point it at another disk), so its parent has to be
 // created here too — otherwise every persist fails with ENOENT and the server

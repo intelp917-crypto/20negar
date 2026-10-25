@@ -15,6 +15,9 @@ import { UploadModal } from './components/UploadModal.tsx';
 import { Video } from './types/index.ts';
 import { InstallPrompt } from './components/InstallPrompt.tsx';
 import { invalidateProjectCache } from './api/projectCache.ts';
+import { MessageCircle, X, Send } from 'lucide-react';
+import { ChatMessage } from './types/index.ts';
+import { api } from './api/client.ts';
 
 const MainLayout: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -22,9 +25,23 @@ const MainLayout: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [isUploadOpen, setIsUploadOpen] = useState<boolean>(false);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatMessage, setChatMessage] = useState('');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const toast = useToast();
   const toastRef = useRef(toast);
   toastRef.current = toast;
+
+  useEffect(() => {
+    if (!isChatOpen) return;
+    let active = true;
+    const load = async () => {
+      try { const data = await api.getChatMessages(); if (active) setChatMessages(data); } catch {}
+    };
+    load();
+    const interval = window.setInterval(load, 5000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [isChatOpen]);
 
   /**
    * دکمه بازگشت موبایل:
@@ -265,6 +282,14 @@ const MainLayout: React.FC = () => {
           setSelectedVideoId(newVideo.id);
         }}
       />
+      <button type="button" onClick={() => setIsChatOpen((open) => !open)} className="chat-fab fixed z-40 w-14 h-14 rounded-full bg-purple-600 hover:bg-purple-500 text-white shadow-2xl shadow-purple-950/60 flex items-center justify-center" aria-label="باز کردن چت">
+        {isChatOpen ? <X className="w-6 h-6" /> : <MessageCircle className="w-6 h-6" />}
+      </button>
+      {isChatOpen && <div className="fixed z-40 chat-fab bottom-20 w-[min(22rem,calc(100vw-2rem))] bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-4" dir="rtl">
+        <h3 className="font-bold text-white mb-3">چت سریع</h3>
+        <div className="min-h-24 max-h-56 overflow-y-auto space-y-2 mb-3">{chatMessages.length === 0 ? <p className="text-xs text-zinc-500">اولین پیام را بنویسید.</p> : chatMessages.map((message) => <div key={message.id} className="text-xs text-zinc-200 bg-zinc-950 rounded-xl p-2"><div className="text-[10px] text-purple-300 mb-1">{message.senderName}</div>{message.message}</div>)}</div>
+        <form onSubmit={async (event) => { event.preventDefault(); const text = chatMessage.trim(); if (!text) return; try { const created = await api.sendChatMessage(text); setChatMessages((prev) => [...prev, created]); setChatMessage(''); } catch (err: any) { toast.error(err?.message || 'ارسال پیام ناموفق بود.'); } }} className="flex gap-2"><input value={chatMessage} onChange={(event) => setChatMessage(event.target.value)} placeholder="پیام..." className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-xs text-white" /><button type="submit" className="p-2 rounded-xl bg-purple-600 text-white" aria-label="ارسال پیام"><Send className="w-4 h-4" /></button></form>
+      </div>}
     </div>
   );
 };

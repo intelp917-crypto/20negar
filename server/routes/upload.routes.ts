@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { authenticate, requireRole } from '../middleware/auth.middleware.ts';
-import { STORAGE_DIR } from '../config.ts';
+import { STORAGE_DIR, MAX_UPLOAD_FILE_SIZE } from '../config.ts';
 import { createUploadSession, normalizeUploadFilename, updateUploadSession } from '../services/upload.service.ts';
 
 /**
@@ -24,7 +24,7 @@ import { createUploadSession, normalizeUploadFilename, updateUploadSession } fro
 const router = Router();
 
 const CHUNK_DIR = path.resolve(STORAGE_DIR, 'temp', 'chunked');
-const MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024; // 4 GB
+const MAX_FILE_SIZE = MAX_UPLOAD_FILE_SIZE;
 const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB (faster throughput)
 const MAX_CHUNK_SIZE = 32 * 1024 * 1024; // 32 MB
 const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 ساعت
@@ -238,7 +238,7 @@ router.post('/', authenticate, requireRole(['Editor', 'Cameraman', 'SuperAdmin',
       return;
     }
     if (size > MAX_FILE_SIZE) {
-      res.status(400).json({ error: 'حجم فایل از سقف مجاز (۴ گیگابایت) بیشتر است.' });
+      res.status(400).json({ error: 'حجم فایل از سقف مجاز (۸ گیگابایت) بیشتر است.' });
       return;
     }
     const ext = path.extname(originalName).toLowerCase();

@@ -3,6 +3,7 @@ import base64
 import datetime as dt
 import json
 import threading
+import shutil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.x509.oid import NameOID
 
 from app.core.cert_manager import CertificateManager, WebrootResponder
+import app.core.cert_manager as cert_manager_module
 
 
 def b64d(value: str) -> bytes:
@@ -246,3 +248,33 @@ def test_webroot_responder_rejects_path_traversal(tmp_path):
     responder = WebrootResponder(tmp_path)
     with pytest.raises(Exception):
         responder.install("../escape", "x")
+
+
+def test_lego_ip_issue_uses_shortlived_profile_and_installs_files(tmp_path, monkeypatch):
+    manager = CertificateManager(tmp_path / "certs", tmp_path / "acme")
+    manager.install_self_signed(["198.51.100.10"])
+    fake_binary = tmp_path / "tools" / "lego.exe"
+    fake_binary.parent.mkdir(parents=True)
+    fake_binary.write_bytes(b"fake lego")
+    monkeypatch.setattr(cert_manager_module, "ensure_lego_binary", lambda _cache: fake_binary)
+
+    commands = []
+
+    def runner(command, cwd, capture_output, text, timeout, check):
+        commands.append(command)
+        output = tmp_path / "lego" / "certificates"
+        output.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(manager.cert_path, output / "198.51.100.10.crt")
+        shutil.copy2(manager.key_path, output / "198.51.100.10.key")
+        return type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    status = manager.issue_with_lego("198.51.100.10", "admin@example.com",
+                                     server_running=True, runner=runner)
+
+    command = commands[0]
+    assert command[1] == "run"
+    assert "--profile" in command and command[command.index("--profile") + 1] == "shortlived"
+    assert "--http.webroot" in command
+    assert command[command.index("--domains") + 1] == "198.51.100.10"
+    assert status["ok"] and status["kind"] == "letsencrypt"
+    assert "198.51.100.10" in status["san"]

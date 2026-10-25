@@ -16,7 +16,10 @@
   @media (max-width: 640px) {
     html, body, #root { min-height: 100%; }
     body { padding-bottom: env(safe-area-inset-bottom); }
+    button, a, input, select, textarea { min-height: 44px; }
   }
+
+  .chat-fab { bottom: max(1rem, env(safe-area-inset-bottom)); right: max(1rem, env(safe-area-inset-right)); }
 
   /* Custom sleek scrollbars */
   ::-webkit-scrollbar {

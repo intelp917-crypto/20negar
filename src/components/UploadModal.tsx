@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   AlertCircle,
   FileVideo,
+  Image as ImageIcon,
   Pause,
   Play,
   RotateCcw,
@@ -30,10 +31,10 @@ import { useAuth } from '../context/AuthContext.tsx';
  *   نهایی‌سازی، موفق یا خطا؛ با امکان توقف/ادامه و تلاش مجدد.
  */
 
-const MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024; // 4 GB — همان سقف سرور
-const MAX_BATCH_FILES = 25;
+const MAX_FILE_SIZE = 8 * 1024 * 1024 * 1024; // 8 GB — همان سقف سرور
+const MAX_BATCH_FILES = 100;
 const TUS_CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB
-const CONCURRENT_UPLOADS = 2; // دو فایل هم‌زمان؛ بقیه در صف می‌مانند
+const CONCURRENT_UPLOADS = 4;
 const TUS_RETRY_DELAYS = [0, 1000, 3000, 5000, 10000, 20000, 30000];
 
 type QueueStatus =
@@ -63,6 +64,7 @@ interface QueueItem {
   uploadId?: string;
   videoId?: number;
   projectId: number;
+  mediaType: 'video' | 'image';
 }
 
 type Stage = 'idle' | 'starting' | 'uploading' | 'done' | 'partial';
@@ -220,7 +222,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
         continue;
       }
       if (file.size > MAX_FILE_SIZE) {
-        rejected.push(`«${file.name}» بزرگ‌تر از ۴ گیگابایت است`);
+        rejected.push(`«${file.name}» بزرگ‌تر از ۸ گیگابایت است`);
         continue;
       }
       const isDuplicate = [...selectedFiles, ...accepted].some(
@@ -250,11 +252,65 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     if (rejected.length > 0) setError(rejected.join(' • '));
   };
 
-  const handleFileDrop = (e: React.DragEvent) => {
+  const handleFileDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
     if (isBusy) return;
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+    const entries = Array.from(e.dataTransfer.items || []).map((item) => (item as any).webkitGetAsEntry?.()).filter(Boolean);
+    if (entries.length === 0) {
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+      return;
+    }
+    const files: File[] = [];
+    const readEntry = async (entry: any): Promise<void> => {
+      if (entry.isFile) {
+        await new Promise<void>((resolve) => entry.file((file: File) => { files.push(file); resolve(); }, () => resolve()));
+        return;
+      }
+      if (entry.isDirectory) {
+        const reader = entry.createReader();
+        for (;;) {
+          const batch = await new Promise<any[]>((resolve) => reader.readEntries(resolve, () => resolve([])));
+          if (batch.length === 0) break;
+          for (const child of batch) await readEntry(child);
+        }
+      }
+    };
+    for (const entry of entries) await readEntry(entry);
+    addFiles(files);
+  };
+
+  /** Open the operating system directory dialog, not a regular file dialog. */
+  const selectFolder = async () => {
+    if (isBusy) return;
+    const picker = (window as Window & {
+      showDirectoryPicker?: () => Promise<any>;
+    }).showDirectoryPicker;
+
+    // showDirectoryPicker is the API that opens the Windows directory dialog
+    // with the native "Select folder" action. It is available only in a
+    // secure context (HTTPS or localhost) in Chromium-based browsers.
+    if (!picker || !window.isSecureContext) {
+      setError('برای باز شدن پنجره «Select folder»، سامانه را با Chrome یا Edge روی HTTPS یا localhost باز کنید. پنجره انتخاب فایل عمداً باز نمی‌شود.');
+      return;
+    }
+
+    try {
+      const directory = await picker();
+      const files: File[] = [];
+      const visit = async (handle: any): Promise<void> => {
+        for await (const entry of handle.values()) {
+          if (entry.kind === 'file') files.push(await entry.getFile());
+          else if (entry.kind === 'directory') await visit(entry);
+          if (files.length >= MAX_BATCH_FILES) return;
+        }
+      };
+      await visit(directory);
+      addFiles(files);
+    } catch (err: any) {
+      // Closing the native picker is not an error and should not show a toast.
+      if (err?.name !== 'AbortError') setError('انتخاب فولدر انجام نشد؛ دوباره تلاش کنید.');
+    }
   };
 
   const removeSelectedFile = (key: string) => {
@@ -317,6 +373,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       progress: 0,
       status: 'queued',
       projectId,
+      mediaType: entry.file.type.startsWith('image/') ? 'image' : 'video',
     }));
     itemsRef.current = initialItems;
     setItems(initialItems);
@@ -359,6 +416,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
         const video = await api.createVideoFromUpload(item.uploadId, {
           ...sharedFields,
           title: item.title,
+          fileType: queueFiles.find((entry) => entry.key === item.key)?.file.type || 'application/octet-stream',
         });
         createdVideosRef.current.push(video);
         updateItem(item.key, { status: 'done', videoId: video.id });
@@ -581,38 +639,41 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
               }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleFileDrop}
-              onClick={() => fileInputRef.current?.click()}
+               onClick={() => fileInputRef.current?.click()}
               className={`border-2 border-dashed rounded-3xl p-6 text-center cursor-pointer transition-all duration-200 ${
                 isDragging
                   ? 'border-purple-500 bg-purple-500/10 scale-[0.99]'
                   : 'border-zinc-700 hover:border-purple-500/60 bg-zinc-950/50 hover:bg-zinc-950/80'
               }`}
             >
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept="video/*,.mkv,.mpg,.mpeg,.mts,.m2ts,.mxf,.ogv,.flv,.3gp,.vob,.ts,.divx,.f4v,.wmv,.mov,.mp4,.webm,.avi,.m4v"
-                onChange={(e) => {
+                 <input
+                 ref={fileInputRef}
+                 type="file"
+                 multiple
+                 accept="*/*"
+                 onChange={(e) => {
                   if (e.target.files) addFiles(e.target.files);
                   e.target.value = '';
                 }}
-                className="hidden"
+               className="hidden"
               />
               <div className="w-14 h-14 mx-auto mb-3 rounded-2xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center text-purple-400">
                 <UploadCloud className="w-7 h-7" />
               </div>
-              <h4 className="text-sm font-bold text-zinc-200 mb-1">
-                فایل‌های ویدیو را اینجا رها کنید (Drag &amp; Drop)
+                 <h4 className="text-sm font-bold text-zinc-200 mb-1">
+                 فایل‌های ویدیو و عکس را اینجا رها کنید (Drag &amp; Drop)
               </h4>
               <p className="text-xs text-zinc-400 mb-3">
                 یا برای انتخاب چند فایل هم‌زمان کلیک کنید — تا {MAX_BATCH_FILES} فایل در هر دسته
               </p>
               <span className="inline-flex items-center px-4 py-2 rounded-xl bg-zinc-800 text-zinc-200 text-xs font-semibold border border-zinc-700 shadow-sm">
-                انتخاب فایل‌های ویدیو
-              </span>
+                 انتخاب فایل‌ها
+               </span>
+               <button type="button" onClick={(e) => { e.stopPropagation(); void selectFolder(); }} className="inline-flex items-center px-4 py-2 mr-2 rounded-xl bg-purple-600/20 text-purple-200 text-xs font-semibold border border-purple-500/30 hover:bg-purple-600/30">
+                 فولدر
+               </button>
               <p className="text-[11px] text-zinc-500 mt-3">
-                همه فرمت‌های ویدیویی پشتیبانی می‌شوند (MP4, MOV, MKV, WebM, AVI, MPG, MTS, MXF, OGV, 3GP, TS و...) — هر فایل تا ۴ گیگابایت
+                 همه فرمت‌های ویدیو و تصویر پذیرفته می‌شوند — هر فایل تا ۸ گیگابایت و هر دسته تا {MAX_BATCH_FILES} فایل
               </p>
             </div>
           ) : null}
@@ -649,7 +710,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                   ? selectedFiles.map((entry) => (
                       <div key={entry.key} className="p-3 flex items-center gap-3">
                         <div className="w-9 h-9 rounded-lg bg-purple-600/20 text-purple-400 border border-purple-500/30 flex items-center justify-center shrink-0">
-                          <FileVideo className="w-4 h-4" />
+                           {entry.file.type.startsWith('image/') ? <ImageIcon className="w-4 h-4" /> : <FileVideo className="w-4 h-4" />}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="text-[11px] font-semibold text-zinc-200 truncate">{entry.file.name}</div>
@@ -660,7 +721,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                             type="text"
                             value={entry.title}
                             onChange={(e) => updateSelectedTitle(entry.key, e.target.value)}
-                            placeholder="عنوان ویدیو"
+                             placeholder={entry.file.type.startsWith('image/') ? 'عنوان تصویر' : 'عنوان ویدیو'}
                             className="mt-1.5 w-full bg-zinc-900 border border-zinc-800 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:ring-1 focus:ring-purple-500"
                           />
                         </div>
@@ -678,7 +739,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                       <div key={item.key} className="p-3 space-y-1.5">
                         <div className="flex items-center gap-2.5">
                           <div className="w-8 h-8 rounded-lg bg-zinc-900 text-zinc-300 border border-zinc-800 flex items-center justify-center shrink-0">
-                            {item.status === 'done' ? (
+                             {item.status === 'done' ? (
                               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                             ) : item.status === 'error' ? (
                               <AlertCircle className="w-4 h-4 text-rose-400" />
@@ -687,7 +748,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                             ) : item.status === 'paused' ? (
                               <Pause className="w-4 h-4 text-amber-400" />
                             ) : (
-                              <FileVideo className="w-4 h-4 text-purple-400" />
+                               item.mediaType === 'image' ? <ImageIcon className="w-4 h-4 text-sky-400" /> : <FileVideo className="w-4 h-4 text-purple-400" />
                             )}
                           </div>
                           <div className="min-w-0 flex-1">

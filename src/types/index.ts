@@ -44,6 +44,7 @@ export interface ProjectFolder {
 }
 
 export type VideoStatus = 'Uploaded' | 'PendingReview' | 'Approved' | 'Rejected';
+export type MediaType = 'video' | 'image';
 export type ProcessingStatus = 'Uploading' | 'Processing' | 'Ready' | 'ProcessingFailed';
 export type QualityName = 'Original' | '1080p' | '720p' | '480p' | '360p';
 
@@ -65,6 +66,7 @@ export interface VideoReview {
   editorName: string;
   action: 'Approved' | 'Rejected';
   comment: string;
+  voiceNotePath?: string | null;
   createdAt: string;
 }
 
@@ -89,6 +91,7 @@ export interface Video {
   title: string;
   originalFilename: string;
   originalPath: string;
+  mediaType: MediaType;
   thumbnailPath: string | null;
   editorId: number;
   editorName: string;
@@ -147,6 +150,14 @@ export interface AppNotification {
   type: 'info' | 'success' | 'warning' | 'error';
   isRead: boolean;
   link: string | null;
+  createdAt: string;
+}
+
+export interface ChatMessage {
+  id: number;
+  senderId: number;
+  senderName: string;
+  message: string;
   createdAt: string;
 }
 

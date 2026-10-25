@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { X, CheckCircle2, XCircle, AlertTriangle, UserCheck } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, CheckCircle2, XCircle, AlertTriangle, UserCheck, Mic, Square, Trash2 } from 'lucide-react';
 import { Video, User } from '../types/index.ts';
 import { api } from '../api/client.ts';
 
@@ -23,6 +23,11 @@ export const ReviewModal: React.FC<ReviewModalProps> = ({
   const [admins, setAdmins] = useState<User[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [voice, setVoice] = useState<Blob | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceUrl, setVoiceUrl] = useState<string | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     if (isOpen && mode === 'approve') {
@@ -39,7 +44,30 @@ export const ReviewModal: React.FC<ReviewModalProps> = ({
     }
   }, [isOpen, mode, video.adminId]);
 
+  useEffect(() => () => { if (voiceUrl) URL.revokeObjectURL(voiceUrl); }, [voiceUrl]);
+
   if (!isOpen) return null;
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => { if (event.data.size > 0) chunksRef.current.push(event.data); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        setVoice(blob);
+        setVoiceUrl(URL.createObjectURL(blob));
+      };
+      recorder.start();
+      recorderRef.current = recorder;
+      setIsRecording(true);
+    } catch { setError('دسترسی به میکروفون ممکن نشد. اجازه میکروفون مرورگر را فعال کنید.'); }
+  };
+
+  const stopRecording = () => { recorderRef.current?.stop(); recorderRef.current = null; setIsRecording(false); };
+  const clearVoice = () => { if (voiceUrl) URL.revokeObjectURL(voiceUrl); setVoice(null); setVoiceUrl(null); };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,9 +83,9 @@ export const ReviewModal: React.FC<ReviewModalProps> = ({
       let updated: Video;
       if (mode === 'approve') {
         const targetAdmin = selectedAdminId ? parseInt(selectedAdminId, 10) : null;
-        updated = await api.approveVideo(video.id, comment.trim() || undefined, targetAdmin);
+         updated = await api.approveVideo(video.id, comment.trim() || undefined, targetAdmin, voice);
       } else {
-        updated = await api.rejectVideo(video.id, comment.trim());
+         updated = await api.rejectVideo(video.id, comment.trim(), voice);
       }
       onSuccess(updated);
       onClose();
@@ -148,6 +176,16 @@ export const ReviewModal: React.FC<ReviewModalProps> = ({
               onChange={(e) => setComment(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 focus:border-purple-500 rounded-xl p-3 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all resize-none leading-relaxed"
             />
+          </div>
+
+          <div className="rounded-2xl bg-zinc-950 border border-zinc-800 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-zinc-300 font-semibold">پیام صوتی ناظر (اختیاری)</label>
+              {!voice && !isRecording && <button type="button" onClick={startRecording} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold"><Mic className="w-4 h-4" /> ضبط ویس</button>}
+              {isRecording && <button type="button" onClick={stopRecording} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 text-rose-300 border border-rose-500/40 font-bold"><Square className="w-3.5 h-3.5 fill-current" /> توقف ضبط</button>}
+            </div>
+            {voiceUrl && !isRecording && <div className="flex items-center gap-2"><audio controls src={voiceUrl} className="h-9 flex-1" /><button type="button" onClick={clearVoice} aria-label="حذف ویس" className="p-2 rounded-lg text-zinc-400 hover:text-rose-300"><Trash2 className="w-4 h-4" /></button></div>}
+            <p className="text-[10px] text-zinc-500">ضبط صدا مانند پیام صوتی انجام می‌شود و همراه توضیحات برای تدوین‌گر ارسال خواهد شد.</p>
           </div>
 
           {error && (

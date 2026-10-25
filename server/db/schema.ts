@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS videos (
   title TEXT NOT NULL,
   original_filename TEXT NOT NULL,
   original_path TEXT NOT NULL,
+  media_type TEXT NOT NULL DEFAULT 'video' CHECK(media_type IN ('video', 'image')),
   thumbnail_path TEXT,
   editor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   -- Raw cameraman footage has no supervisor yet; the editor picks one when
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS video_reviews (
   editor_id INTEGER NOT NULL REFERENCES users(id),
   action TEXT NOT NULL CHECK(action IN ('Approved', 'Rejected')),
   comment TEXT,
+  voice_note_path TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -92,6 +94,13 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processing_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -114,6 +123,7 @@ CREATE INDEX IF NOT EXISTS idx_video_qualities_comp ON video_qualities(video_id,
 CREATE INDEX IF NOT EXISTS idx_video_reviews_comp ON video_reviews(video_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_processing_jobs_comp ON processing_jobs(video_id, status);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, is_read, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_comp ON audit_logs(user_id, created_at DESC);
 `;
 
@@ -439,4 +449,12 @@ export function runMigrations(database = db): void {
       [6, new Date().toISOString()]
     );
   }
+
+  // Additive media/review columns for existing installations. Keep this
+  // compatibility migration unversioned so older tooling that expects the
+  // last durable migration to be v6 remains compatible.
+  try { database.query('SELECT media_type FROM videos LIMIT 1'); }
+  catch { database.exec("ALTER TABLE videos ADD COLUMN media_type TEXT NOT NULL DEFAULT 'video'"); }
+  try { database.query('SELECT voice_note_path FROM video_reviews LIMIT 1'); }
+  catch { database.exec('ALTER TABLE video_reviews ADD COLUMN voice_note_path TEXT'); }
 }

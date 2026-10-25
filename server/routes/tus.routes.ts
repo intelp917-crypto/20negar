@@ -6,7 +6,7 @@ import { Server as TusServer } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 import { authenticate, requireRole, AuthenticatedUser } from '../middleware/auth.middleware.ts';
 import { AuthService } from '../services/auth.service.ts';
-import { STORAGE_DIR } from '../config.ts';
+import { STORAGE_DIR, MAX_UPLOAD_FILE_SIZE } from '../config.ts';
 import { createSessionFromCompletedFile } from './upload.routes.ts';
 import { decideUploadFinish, getUploadSession, isUploadSessionOwner, normalizeUploadFilename, upsertUploadSession, updateUploadSession } from '../services/upload.service.ts';
 
@@ -22,7 +22,7 @@ import { decideUploadFinish, getUploadSession, isUploadSessionOwner, normalizeUp
  */
 
 const TUS_DIR = path.resolve(STORAGE_DIR, 'temp', 'tus');
-const MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024; // 4 GB
+const MAX_FILE_SIZE = MAX_UPLOAD_FILE_SIZE;
 const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 ساعت
 // همه فرمت‌های ویدیویی پذیرفته می‌شوند؛ تبدیل به فرمت استریم را FFmpeg سمت سرور انجام می‌دهد
 
@@ -118,7 +118,7 @@ export const tusServer = new TusServer({
       throw tusError(400, 'فایل انتخاب‌شده خالی است.');
     }
     if (Number(upload.size) > MAX_FILE_SIZE) {
-      throw tusError(400, 'حجم فایل از سقف مجاز (۴ گیگابایت) بیشتر است.');
+      throw tusError(400, 'حجم فایل از سقف مجاز (۸ گیگابایت) بیشتر است.');
     }
 
     const checksum = expectedChecksum(meta);

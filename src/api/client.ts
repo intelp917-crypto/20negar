@@ -1,4 +1,4 @@
-import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole, Project, ProjectFolder, NewProjectInput } from '../types/index.ts';
+import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole, Project, ProjectFolder, NewProjectInput, ChatMessage } from '../types/index.ts';
 import { Upload as TusUpload } from 'tus-js-client';
 
 const TOKEN_KEY = 'cineflow_auth_token';
@@ -444,17 +444,20 @@ export const api = {
     );
   },
 
-  approveVideo: (videoId: number, comment?: string, adminId?: number | null) =>
-    request<Video>(`/api/videos/${videoId}/approve`, {
-      method: 'POST',
-      body: JSON.stringify({ comment, adminId }),
-    }),
+  approveVideo: (videoId: number, comment?: string, adminId?: number | null, voice?: Blob | null) => {
+    const body = new FormData();
+    if (comment) body.append('comment', comment);
+    if (adminId !== undefined && adminId !== null) body.append('adminId', String(adminId));
+    if (voice) body.append('voice', voice, 'review-note.webm');
+    return request<Video>(`/api/videos/${videoId}/approve`, { method: 'POST', body });
+  },
 
-  rejectVideo: (videoId: number, reason: string) =>
-    request<Video>(`/api/videos/${videoId}/reject`, {
-      method: 'POST',
-      body: JSON.stringify({ reason }),
-    }),
+  rejectVideo: (videoId: number, reason: string, voice?: Blob | null) => {
+    const body = new FormData();
+    body.append('reason', reason);
+    if (voice) body.append('voice', voice, 'review-note.webm');
+    return request<Video>(`/api/videos/${videoId}/reject`, { method: 'POST', body });
+  },
 
   assignEditor: (videoId: number, editorId: number) =>
     request<Video>(`/api/videos/${videoId}/assign-editor`, {
@@ -480,6 +483,12 @@ export const api = {
     request<{ success: boolean }>(`/api/notifications/${id}/read`, { method: 'PUT' }),
   markAllNotificationsRead: () =>
     request<{ success: boolean }>('/api/notifications/read-all', { method: 'PUT' }),
+
+  getChatMessages: () => request<ChatMessage[]>('/api/chat/messages'),
+  sendChatMessage: (message: string) => request<ChatMessage>('/api/chat/messages', {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  }),
 
   // Web Push (اعلان روی گوشی با صدا)
   getPushPublicKey: () => request<{ publicKey: string }>('/api/push/public-key'),

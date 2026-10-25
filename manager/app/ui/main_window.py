@@ -738,18 +738,18 @@ class MainWindow(QMainWindow):
         values = page.preferences()
         domain = values["tls_domain"]
         if not domain:
-            self.toast("Enter the domain name that points at this server.", "warning")
+            self.toast("Enter a domain or the public IP address used to reach this server.", "warning")
             page.domain_edit.setFocus()
             return
-        if "." not in domain or "/" in domain:
-            self.toast("Enter a full domain such as studio.example.com", "warning")
+        if "/" in domain or any(char.isspace() for char in domain):
+            self.toast("Enter a valid domain or public IP address.", "warning")
             page.domain_edit.setFocus()
             return
         box = QMessageBox(self)
-        box.setWindowTitle("Let's Encrypt")
+        box.setWindowTitle("Let's Encrypt via lego")
         box.setText(f"Request a certificate for {domain}?")
-        details = ["Let's Encrypt validates the domain over HTTP on port 80.",
-                   "Port 80 must reach this server, and the domain must point at this IP.",
+        details = ["lego will validate this domain or public IP over HTTP on public port 80.",
+                   "Forward public port 80 to this server; port 3000 alone cannot satisfy the ACME challenge.",
                    "The server restarts once to load the new certificate."]
         if values["tls_staging"]:
             details.append("Staging mode: the result is a test certificate, not trusted by browsers.")
