@@ -54,22 +54,49 @@ export class LocalFileStorage implements IFileStorage {
     return destinationKey;
   }
 
+  /**
+   * Moves a completed upload into its permanent location.
+   *
+   * Same-volume moves are a metadata-only rename: instant even for an 8 GB file.
+   * The previous `copyFile` implementation duplicated the whole file on every
+   * finalize, which is what made "100%" hang for minutes and consumed double
+   * disk space. Only a genuinely cross-device move falls back to a copy.
+   */
   public async storeLocalFile(sourceTempPath: string, destinationKey: string): Promise<string> {
     const fullPath = this.getPhysicalPath(destinationKey);
     const dir = path.dirname(fullPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    await fs.promises.copyFile(sourceTempPath, fullPath);
-    // Cleanup temporary file if different
-    if (sourceTempPath !== fullPath && fs.existsSync(sourceTempPath)) {
+
+    if (path.resolve(sourceTempPath) === fullPath) return destinationKey;
+
+    let lastError: NodeJS.ErrnoException | null = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        await fs.promises.unlink(sourceTempPath);
+        await fs.promises.rename(sourceTempPath, fullPath);
+        return destinationKey;
       } catch (err) {
-        // ignore unlink error
+        lastError = err as NodeJS.ErrnoException;
+        // Only a cross-device move needs a real copy. Other errors are usually
+        // a Windows handle that is still closing, so retry briefly first.
+        if (lastError.code === 'EXDEV') break;
+        if (lastError.code === 'ENOENT') throw lastError;
+        await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)));
       }
     }
-    return destinationKey;
+
+    if (lastError?.code === 'EXDEV') {
+      await fs.promises.copyFile(sourceTempPath, fullPath);
+      try {
+        await fs.promises.unlink(sourceTempPath);
+      } catch {
+        // A leftover temp file is removed by the periodic upload cleanup.
+      }
+      return destinationKey;
+    }
+
+    throw lastError || new Error(`Could not move uploaded file to ${destinationKey}.`);
   }
 
   public async exists(fileKey: string): Promise<boolean> {

@@ -13,7 +13,11 @@ import { resolveVideoProject, ProjectSelectionError } from '../services/project.
 import { normalizeUploadFilename } from '../services/upload.service.ts';
 import { db } from '../db/database.ts';
 import { STORAGE_DIR } from '../config.ts';
-import { loadSession as loadChunkSession, dataFile as chunkDataFile, cleanupSession as cleanupChunkSession } from './upload.routes.ts';
+import {
+  cleanupUploadArtifacts,
+  completeUploadFinalization,
+  resolveCompletedUpload,
+} from '../services/upload-finalize.service.ts';
 
 const router = Router();
 
@@ -32,27 +36,6 @@ function contentTypeFor(filename: string, mediaType: 'video' | 'image'): string 
   return ({ '.avif': 'image/avif', '.bmp': 'image/bmp', '.gif': 'image/gif', '.heic': 'image/heic', '.heif': 'image/heif', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg', '.png': 'image/png', '.svg': 'image/svg+xml', '.tif': 'image/tiff', '.tiff': 'image/tiff', '.webp': 'image/webp' } as Record<string, string>)[ext] || 'application/octet-stream';
 }
 
-/**
- * فایل آپلودشده با سیستم چانکی موازی را به فایل موقت استاندارد تبدیل می‌کند
- * تا ادامه پایپ‌لاین ساخت ویدیو بدون تغییر اجرا شود.
- */
-function resolveChunkedUpload(uploadId: string, userId: number): { tempPath: string; originalName: string; size: number } | null {
-  const session = loadChunkSession(uploadId);
-  if (!session || session.userId !== userId) return null;
-  const src = chunkDataFile(uploadId);
-  if (!fs.existsSync(src)) return null;
-
-  // اعتبارسنجی سخت‌گیرانه: همه چانک‌ها باید دریافت شده و حجم نهایی درست باشد
-  if (session.received.length !== session.totalChunks) return null;
-  for (let i = 0; i < session.totalChunks; i++) {
-    if (!session.received.includes(i)) return null;
-  }
-  const stat = fs.statSync(src);
-  if (stat.size !== session.fileSize) return null;
-
-  // فایل نهایی همان فایل چانکی است؛ نیازی به کپی مجدد نیست (storeLocalFile آن را جابه‌جا می‌کند)
-  return { tempPath: src, originalName: session.originalName, size: session.fileSize };
-}
 
 // GET /api/videos/stats - Dashboard statistics scoped per role
 router.get('/stats', authenticate, (req: Request, res: Response): void => {
@@ -152,7 +135,7 @@ router.post(
   requireRole(['Editor', 'Cameraman']),
   videoUpload.single('video'),
   async (req: Request, res: Response): Promise<void> => {
-    let chunkTempPath: string | null = null;
+    let uploadSessionId: string | null = null;
     try {
       const { title, supervisorId } = req.body;
       if (!title || !title.trim()) {
@@ -187,16 +170,32 @@ router.post(
       let fileSize: number;
 
       if (req.body.uploadId) {
-        // مسیر جدید: آپلود چانکی موازی (فیچر ۳)
-        const assembled = resolveChunkedUpload(String(req.body.uploadId), req.user!.id);
+        // مسیر TUS / چانکی: فایل باید کامل، متعلق به همین کاربر و با حجم تأییدشده باشد.
+        const uploadId = String(req.body.uploadId);
+        const assembled = resolveCompletedUpload(uploadId, req.user!.id);
         if (!assembled) {
-          res.status(400).json({ error: 'نشست آپلود چانکی یافت نشد یا ناقص است؛ لطفاً دوباره تلاش کنید.' });
+          // code مشخص است تا کلاینت بتواند «نشست گم‌شده» را از خطای اعتبارسنجی
+          // (پروژه/ناظر) تفکیک کند و در صورت لزوم یک‌بار از صفر آپلود کند.
+          res.status(400).json({
+            error: 'نشست آپلود یافت نشد یا هنوز کامل نشده است؛ لطفاً آپلود را از سر بگیرید.',
+            code: 'upload_not_found',
+          });
+          return;
+        }
+        // تکرار درخواست (مثلاً پاسخ قبلی در شبکه گم شده) همان ویدیوی قبلی را برمی‌گرداند.
+        if (assembled.alreadyFinalizedVideoId) {
+          const existing = VideoService.getVideoById(assembled.alreadyFinalizedVideoId, req.user!);
+          if (existing) {
+            res.json(existing);
+            return;
+          }
+          res.status(409).json({ error: 'این آپلود قبلاً ثبت شده است.' });
           return;
         }
         tempPath = assembled.tempPath;
         originalName = assembled.originalName;
         fileSize = assembled.size;
-        chunkTempPath = assembled.tempPath;
+        uploadSessionId = uploadId;
       } else if (req.file) {
         tempPath = req.file.path;
         originalName = normalizeUploadFilename(req.file.originalname) || 'video.mp4';
@@ -210,9 +209,8 @@ router.post(
       const destinationKey = `videos/${targetFileName}`;
       const mediaType = mediaTypeFor(originalName, req.body.fileType || req.headers['content-type']);
 
-      // Move uploaded file from temp to private storage
+      // Move uploaded file from temp to private storage (rename — no 8 GB copy)
       await fileStorage.storeLocalFile(tempPath, destinationKey);
-      if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
 
       const created = VideoService.createVideo({
         title: title.trim(),
@@ -228,14 +226,16 @@ router.post(
         ipAddress: req.ip,
       });
 
+      if (uploadSessionId) {
+        completeUploadFinalization(req.user!.id, uploadSessionId, created.id, destinationKey);
+        cleanupUploadArtifacts(uploadSessionId);
+      }
+
       res.status(201).json(created);
     } catch (err: any) {
       console.error('[VideoRoutes] Upload error:', err);
-      if (chunkTempPath && fs.existsSync(chunkTempPath)) {
-        try {
-          fs.unlinkSync(chunkTempPath);
-        } catch {}
-      }
+      // بایت‌های آپلودشده عمداً پاک نمی‌شوند: با همان uploadId می‌توان بدون
+      // ارسال دوبارهٔ چند گیگابایت، ثبت را دوباره امتحان کرد.
       if (req.file && fs.existsSync(req.file.path)) {
         try {
           fs.unlinkSync(req.file.path);
@@ -254,7 +254,7 @@ router.post(
   requireRole(['Editor']),
   videoUpload.single('video'),
   async (req: Request, res: Response): Promise<void> => {
-    let chunkTempPath: string | null = null;
+    let uploadSessionId: string | null = null;
     try {
       const parentId = parseInt(req.params.id, 10);
       const parentVideo = VideoService.getVideoById(parentId, req.user!);
@@ -268,15 +268,28 @@ router.post(
       let fileSize: number;
 
       if (req.body.uploadId) {
-        const assembled = resolveChunkedUpload(String(req.body.uploadId), req.user!.id);
+        const uploadId = String(req.body.uploadId);
+        const assembled = resolveCompletedUpload(uploadId, req.user!.id);
         if (!assembled) {
-          res.status(400).json({ error: 'نشست آپلود چانکی یافت نشد یا ناقص است؛ لطفاً دوباره تلاش کنید.' });
+          res.status(400).json({
+            error: 'نشست آپلود یافت نشد یا هنوز کامل نشده است؛ لطفاً آپلود را از سر بگیرید.',
+            code: 'upload_not_found',
+          });
+          return;
+        }
+        if (assembled.alreadyFinalizedVideoId) {
+          const existing = VideoService.getVideoById(assembled.alreadyFinalizedVideoId, req.user!);
+          if (existing) {
+            res.json(existing);
+            return;
+          }
+          res.status(409).json({ error: 'این آپلود قبلاً ثبت شده است.' });
           return;
         }
         tempPath = assembled.tempPath;
         originalName = assembled.originalName;
         fileSize = assembled.size;
-        chunkTempPath = assembled.tempPath;
+        uploadSessionId = uploadId;
       } else if (req.file) {
         tempPath = req.file.path;
         originalName = normalizeUploadFilename(req.file.originalname) || 'video.mp4';
@@ -291,7 +304,6 @@ router.post(
       const mediaType = mediaTypeFor(originalName, req.body.fileType || req.headers['content-type']);
 
       await fileStorage.storeLocalFile(tempPath, destinationKey);
-      if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
 
       const title = req.body.title?.trim() || `${parentVideo.title} (نسخه ${parentVideo.versionNumber + 1})`;
       const supervisorId = req.body.supervisorId ? parseInt(req.body.supervisorId, 10) : parentVideo.supervisorId;
@@ -310,14 +322,14 @@ router.post(
         ipAddress: req.ip,
       });
 
+      if (uploadSessionId) {
+        completeUploadFinalization(req.user!.id, uploadSessionId, newVersion.id, destinationKey);
+        cleanupUploadArtifacts(uploadSessionId);
+      }
+
       res.status(201).json(newVersion);
     } catch (err: any) {
       console.error('[VideoRoutes] Version upload error:', err);
-      if (chunkTempPath && fs.existsSync(chunkTempPath)) {
-        try {
-          fs.unlinkSync(chunkTempPath);
-        } catch {}
-      }
       if (req.file && fs.existsSync(req.file.path)) {
         try {
           fs.unlinkSync(req.file.path);
@@ -371,7 +383,7 @@ router.post(
   videoUpload.single('video'),
   async (req: Request, res: Response): Promise<void> => {
     const videoId = parseInt(req.params.id, 10);
-    let chunkTempPath: string | null = null;
+    let uploadSessionId: string | null = null;
     let storedKey: string | null = null;
     try {
       const supervisorId = parseInt(req.body.supervisorId, 10);
@@ -385,15 +397,28 @@ router.post(
       let fileSize: number;
 
       if (req.body.uploadId) {
-        const assembled = resolveChunkedUpload(String(req.body.uploadId), req.user!.id);
+        const uploadId = String(req.body.uploadId);
+        const assembled = resolveCompletedUpload(uploadId, req.user!.id);
         if (!assembled) {
-          res.status(400).json({ error: 'نشست آپلود چانکی یافت نشد یا ناقص است؛ لطفاً دوباره تلاش کنید.' });
+          res.status(400).json({
+            error: 'نشست آپلود یافت نشد یا هنوز کامل نشده است؛ لطفاً آپلود را از سر بگیرید.',
+            code: 'upload_not_found',
+          });
+          return;
+        }
+        if (assembled.alreadyFinalizedVideoId) {
+          const existing = VideoService.getVideoById(assembled.alreadyFinalizedVideoId, req.user!);
+          if (existing) {
+            res.json(existing);
+            return;
+          }
+          res.status(409).json({ error: 'این آپلود قبلاً ثبت شده است.' });
           return;
         }
         tempPath = assembled.tempPath;
         originalName = assembled.originalName;
         fileSize = assembled.size;
-        chunkTempPath = assembled.tempPath;
+        uploadSessionId = uploadId;
       } else if (req.file) {
         tempPath = req.file.path;
         originalName = normalizeUploadFilename(req.file.originalname) || 'video.mp4';
@@ -407,7 +432,6 @@ router.post(
       storedKey = `videos/${targetFileName}`;
       const mediaType = mediaTypeFor(originalName, req.body.fileType || req.headers['content-type']);
       await fileStorage.storeLocalFile(tempPath, storedKey);
-      if (req.body.uploadId) cleanupChunkSession(String(req.body.uploadId));
 
       const result = VideoService.replaceRawVideo(
         videoId,
@@ -439,14 +463,16 @@ router.post(
         console.warn('[VideoRoutes] Replacement cleanup warning:', cleanupError);
       }
 
+      if (uploadSessionId) {
+        completeUploadFinalization(req.user!.id, uploadSessionId, result.video.id, storedKey);
+        cleanupUploadArtifacts(uploadSessionId);
+      }
+
       res.status(201).json(result.video);
     } catch (err: any) {
       console.error('[VideoRoutes] Replace error:', err);
       if (storedKey) {
         try { await fileStorage.deleteFile(storedKey); } catch {}
-      }
-      if (chunkTempPath && fs.existsSync(chunkTempPath)) {
-        try { fs.unlinkSync(chunkTempPath); } catch {}
       }
       if (req.file && fs.existsSync(req.file.path)) {
         try { fs.unlinkSync(req.file.path); } catch {}

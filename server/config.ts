@@ -56,6 +56,11 @@ export const TRANSCODER_ENABLED = /^(1|true|yes)$/i.test((process.env.NEGAR_TRAN
 /** Shared upload policy used by every transport and the UI. */
 export const MAX_UPLOAD_FILE_SIZE = 8 * 1024 * 1024 * 1024;
 export const MAX_UPLOAD_FILES = 100;
+/**
+ * How long an unfinished upload can be resumed. On unreliable mobile networks a
+ * user may come back the next day with the same file, so the default is 48h.
+ */
+export const UPLOAD_SESSION_TTL_MS = 48 * 60 * 60 * 1000;
 
 // Ensure base directories exist. The database file may live outside DATA_DIR
 // (the desktop manager can point it at another disk), so its parent has to be

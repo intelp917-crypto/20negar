@@ -46,6 +46,21 @@ import chatRoutes from './server/routes/chat.routes.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * Large media uploads over poor mobile links can legitimately take many minutes
+ * for a single chunk. Node's default `requestTimeout` (300s) aborts the request
+ * mid-body, which the browser then restarts from the last confirmed byte — the
+ * classic "stuck at 37%" symptom. Request bodies are allowed to take as long as
+ * they need; slow-loris style attacks are still bounded by the header and
+ * keep-alive timeouts, and every upload is authenticated.
+ */
+function tuneServerTimeouts(target: http.Server | https.Server): void {
+  target.requestTimeout = 0;
+  target.timeout = 0;
+  target.headersTimeout = 76_000;
+  target.keepAliveTimeout = 75_000;
+}
+
 async function startServer() {
   const app = express();
 
@@ -244,6 +259,7 @@ async function startServer() {
     if (ENABLE_STANDARD_PORTS) {
       if (HTTP_PORT !== PORT) {
         const httpServer = http.createServer(app);
+        tuneServerTimeouts(httpServer);
         httpServer.on('error', (err: NodeJS.ErrnoException) => console.warn(describeListenError(HTTP_PORT, 'HTTP', err)));
         httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
           console.log(`[Server] Standard HTTP port ${HTTP_PORT} is active (VPN reachable).`);
@@ -258,6 +274,7 @@ async function startServer() {
           return;
         }
         const secureServer = https.createServer(tlsMaterial, app);
+        tuneServerTimeouts(secureServer);
         secureServer.on('error', (err: NodeJS.ErrnoException) => console.warn(describeListenError(SECURE_PORT, 'HTTPS', err)));
         secureServer.listen(SECURE_PORT, '0.0.0.0', () => {
           console.log(
@@ -269,6 +286,7 @@ async function startServer() {
       }
     }
   });
+  tuneServerTimeouts(server);
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     console.error(describeListenError(PORT, 'main', err));

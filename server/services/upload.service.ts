@@ -136,6 +136,33 @@ export function isUploadSessionOwner(session: Pick<UploadSession, 'ownerId'> | n
   return !!session && session.ownerId === ownerId;
 }
 
+/** Owner-agnostic lookup, used only by background cleanup and finalization idempotency. */
+export function getUploadSessionById(id: string): UploadSession | null {
+  return db.queryOne<UploadSession>(`SELECT ${SESSION_COLUMNS} FROM upload_sessions WHERE id = ?`, [id]);
+}
+
+export function getExpiredUploadSessions(nowIso: string, limit = 250): UploadSession[] {
+  return db.query<UploadSession>(
+    `SELECT ${SESSION_COLUMNS} FROM upload_sessions WHERE expires_at < ? ORDER BY expires_at ASC LIMIT ?`,
+    [nowIso, limit]
+  );
+}
+
+export function deleteUploadSession(id: string): void {
+  db.run('DELETE FROM upload_sessions WHERE id = ?', [id]);
+}
+
+/** Records that an upload is now a video; repeated finalize calls stay idempotent. */
+export function markUploadFinalized(ownerId: number, id: string, videoId: number, finalKey: string): UploadSession | null {
+  return updateUploadSession(ownerId, id, {
+    state: 'finalized',
+    finalizedVideoId: videoId,
+    finalKey,
+    errorCode: null,
+    errorMessage: null,
+  });
+}
+
 export function decideUploadFinish(input: UploadFinishInput): UploadFinishDecision {
   const verified = !input.expectedChecksum || input.expectedChecksum === input.actualChecksum;
   const mismatch = !!input.expectedChecksum && !verified;

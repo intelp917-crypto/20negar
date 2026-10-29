@@ -1,5 +1,5 @@
 import { User, Video, AdminStats, AppNotification, AuditLog, SystemStats, UserRole, Project, ProjectFolder, NewProjectInput, ChatMessage } from '../types/index.ts';
-import { Upload as TusUpload } from 'tus-js-client';
+import { uploadFileWithTus } from '../upload/tus-upload.ts';
 
 const TOKEN_KEY = 'cineflow_auth_token';
 
@@ -42,14 +42,17 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
   if (!response.ok) {
     let errorMessage = `خطای سرور: کد ${response.status}`;
+    let errorCode: string | undefined;
     try {
       const errorJson = await response.json();
       if (errorJson.error) errorMessage = errorJson.error;
+      if (typeof errorJson.code === 'string') errorCode = errorJson.code;
     } catch {
       // ignore
     }
-    const error = new Error(errorMessage) as Error & { status?: number };
+    const error = new Error(errorMessage) as Error & { status?: number; code?: string };
     error.status = response.status;
+    if (errorCode) error.code = errorCode;
     throw error;
   }
 
@@ -205,15 +208,11 @@ async function fastUpload(
   return uploadId;
 }
 
-// آپلود TUS (tus.io): تکه‌های ۱۶ مگابایتی، ازسره‌گیری بعد از قطعی و تلاش مجدد خودکار
-const TUS_CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB
-const TUS_RETRY_DELAYS = [0, 1000, 2000, 5000, 10000, 30000];
-
 /**
- * آپلود فایل با پروتکل TUS:
- * - سرور رسمی @tus/server سمت بک‌اند؛ کلاینت با تکه‌های بزرگ و تلاش مجدد خودکار
- * - اگر وسط کار اینترنت قطع شود از همان‌جا ادامه می‌دهد (Resume)
- * - خروجی: شناسه نشست آپلود که برای ساخت ویدیو به POST /api/videos می‌رود
+ * آپلود فایل با پروتکل TUS از طریق موتور مقاوم `src/upload/tus-upload.ts`:
+ * تکه‌های کوچک روی موبایل، تلاش مجدد بی‌پایان روی اینترنت ناپایدار، نگهبان
+ * درخواست‌های معلق و ادامه از آخرین بایت تأییدشده.
+ * خروجی: شناسهٔ نشست آپلود که برای ساخت ویدیو به POST /api/videos می‌رود.
  */
 async function tusUpload(
   file: File,
@@ -221,61 +220,10 @@ async function tusUpload(
   onProgress?: (percent: number) => void
 ): Promise<string> {
   const token = getStoredToken();
-
-  return new Promise<string>((resolve, reject) => {
-    let upload: TusUpload;
-
-    upload = new TusUpload(file, {
-      endpoint: '/api/tus',
-      chunkSize: TUS_CHUNK_SIZE,
-      retryDelays: TUS_RETRY_DELAYS,
-      uploadDataDuringCreation: true,
-      removeFingerprintOnSuccess: true,
-      storeFingerprintForResuming: true,
-      metadata: {
-        filename: file.name,
-        fileType: file.type || 'video/mp4',
-        ...fields,
-      },
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      onProgress: (bytesSent: number, bytesTotal: number) => {
-        if (onProgress && bytesTotal > 0) {
-          onProgress(Math.min(100, Math.round((bytesSent / bytesTotal) * 100)));
-        }
-      },
-      onSuccess: () => {
-        const url = upload.url || '';
-        const uploadId = url.split('/').filter(Boolean).pop() || '';
-        if (!uploadId) {
-          reject(new Error('آپلود کامل نشد؛ لطفاً دوباره تلاش کنید.'));
-          return;
-        }
-        if (onProgress) onProgress(100);
-        resolve(uploadId);
-      },
-      onError: (err: any) => {
-        let message = 'آپلود با خطا متوقف شد؛ لطفاً دوباره تلاش کنید.';
-        try {
-          const body = err?.originalResponse?.getBody?.();
-          if (typeof body === 'string' && body.trim()) {
-            try {
-              const parsed = JSON.parse(body);
-              if (parsed?.error) message = parsed.error;
-              else message = body.trim();
-            } catch {
-              message = body.trim();
-            }
-          } else if (err?.message) {
-            message = String(err.message);
-          }
-        } catch {
-          // keep default message
-        }
-        reject(new Error(message));
-      },
-    });
-
-    upload.start();
+  return uploadFileWithTus(file, {
+    metadata: { ...fields },
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    onProgress,
   });
 }
 

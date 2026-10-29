@@ -1,6 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
-import Uppy from '@uppy/core';
-import Tus from '@uppy/tus';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   UploadCloud,
   X,
@@ -14,57 +12,35 @@ import {
   RotateCcw,
   Loader2,
   ListChecks,
+  WifiOff,
+  ShieldCheck,
 } from 'lucide-react';
 import { NewProjectInput, Project, User, Video } from '../types/index.ts';
 import { api, getStoredToken } from '../api/client.ts';
 import { useAuth } from '../context/AuthContext.tsx';
+import { UploadQueue } from '../upload/upload-queue.ts';
+import type { QueueItem, QueueStatus } from '../upload/upload-queue.ts';
+import { chooseConcurrency } from '../upload/policy.ts';
 
 /**
- * آپلود گروهی با Uppy + TUS
+ * آپلود گروهی — موتور جدید (tus.io)
  * -------------------------------------------------------------------
- * - همه فایل‌ها در یک صف قرار می‌گیرند و دو به دو (قابل تغییر با limit)
- *   آپلود می‌شوند؛ قطعی اینترنت فقط همان تکه را متوقف می‌کند.
- * - TUS آپلود را از همان بایت قطع‌شده ادامه می‌دهد (Resume) و تلاش مجدد
- *   خودکار دارد.
- * - پس از پایان هر فایل، شناسه نشست TUS به رکورد ویدیو در سرور تبدیل می‌شود.
- * - وضعیت هر فایل جداگانه نمایش داده می‌شود: در صف، در حال ارسال، متوقف،
- *   نهایی‌سازی، موفق یا خطا؛ با امکان توقف/ادامه و تلاش مجدد.
+ * - تکه‌های ۴ مگابایتی روی موبایل/آیفون و ۱۶ مگابایتی روی دسکتاپ
+ * - روی موبایل فقط یک فایل هم‌زمان (اینترنت ضعیف با ۴ اتصال موازی اشباع می‌شد)
+ * - قطعی اینترنت ⇒ تلاش مجدد خودکار و بی‌پایان از همان بایت
+ * - XHR معلق (قفل‌شدن صفحهٔ آیفون) ⇒ نگهبانِ سکوت، درخواست را قطع و ادامه می‌دهد
+ * - پس از پایان ارسال، اگر «ثبت ویدیو» شکست بخورد، همان آپلود ذخیره می‌شود و
+ *   تلاش دوباره فقط مرحلهٔ ثبت را تکرار می‌کند (بدون ارسال دوبارهٔ فایل)
+ * - صفحه در حین آپلود روشن نگه داشته می‌شود تا قفل خودکار گوشی آپلود را نکشد
  */
 
 const MAX_FILE_SIZE = 8 * 1024 * 1024 * 1024; // 8 GB — همان سقف سرور
 const MAX_BATCH_FILES = 100;
-const TUS_CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB
-const CONCURRENT_UPLOADS = 4;
-const TUS_RETRY_DELAYS = [0, 1000, 3000, 5000, 10000, 20000, 30000];
-
-type QueueStatus =
-  | 'queued'
-  | 'uploading'
-  | 'paused'
-  | 'finalizing'
-  | 'done'
-  | 'error'
-  | 'canceled';
 
 interface SelectedFile {
   key: string;
   file: File;
   title: string;
-}
-
-interface QueueItem {
-  key: string;
-  fileId: string | null;
-  name: string;
-  size: number;
-  title: string;
-  progress: number;
-  status: QueueStatus;
-  error?: string;
-  uploadId?: string;
-  videoId?: number;
-  projectId: number;
-  mediaType: 'video' | 'image';
 }
 
 type Stage = 'idle' | 'starting' | 'uploading' | 'done' | 'partial';
@@ -79,15 +55,34 @@ const STATUS_LABEL: Record<QueueStatus, string> = {
   queued: 'در صف',
   uploading: 'در حال ارسال',
   paused: 'متوقف',
+  retrying: 'تلاش دوباره…',
   finalizing: 'ثبت در سرور',
   done: 'تکمیل شد',
   error: 'خطا',
   canceled: 'لغو شد',
 };
 
+function useOnlineStatus(): boolean {
+  const [online, setOnline] = useState<boolean>(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine !== false
+  );
+  useEffect(() => {
+    const goOnline = () => setOnline(true);
+    const goOffline = () => setOnline(false);
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, []);
+  return online;
+}
+
 export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const { user } = useAuth();
   const isCameraman = user?.role === 'Cameraman';
+  const isOnline = useOnlineStatus();
 
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
   const [supervisorId, setSupervisorId] = useState<number | ''>('');
@@ -103,41 +98,23 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
   const [error, setError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const uppyRef = useRef<Uppy | null>(null);
+  const queueRef = useRef<UploadQueue | null>(null);
   const itemsRef = useRef<QueueItem[]>([]);
   const createdVideosRef = useRef<Video[]>([]);
-  const finalizePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   const autoClosedRef = useRef(false);
-  // فیلدهای مشترک دسته (شناسه پروژه/ناظر) برای تلاش مجدد پس از خطای نهایی‌سازی.
-  const batchFieldsRef = useRef<Record<string, string>>({});
+  const closingRef = useRef(false);
+  const completedRef = useRef(false);
 
   const isBusy = stage === 'starting' || stage === 'uploading';
 
-  /** آیتم‌ها هم در state و هم در ref نگه داشته می‌شوند تا رویدادهای async Uppy آخرین مقدار را ببینند. */
-  const applyItems = (updater: (prev: QueueItem[]) => QueueItem[]) => {
-    const next = updater(itemsRef.current);
+  const applyItems = (next: QueueItem[]) => {
     itemsRef.current = next;
     setItems(next);
   };
 
-  const updateItem = (key: string, patch: Partial<QueueItem>) => {
-    applyItems((prev) => prev.map((item) => (item.key === key ? { ...item, ...patch } : item)));
-  };
-
-  const destroyUppy = () => {
-    const uppy = uppyRef.current;
-    uppyRef.current = null;
-    if (!uppy) return;
-    try {
-      uppy.cancelAll();
-    } catch {}
-    try {
-      uppy.destroy();
-    } catch {}
-  };
-
   useEffect(() => {
     if (isOpen) {
+      closingRef.current = false;
       setIsLoadingProjects(true);
       Promise.allSettled([
         isCameraman ? Promise.resolve([] as User[]) : api.getSupervisors(),
@@ -145,16 +122,17 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       ]).then(([supervisorResult, projectResult]) => {
         if (supervisorResult.status === 'fulfilled') {
           setSupervisors(supervisorResult.value);
-          if (!isCameraman && supervisorResult.value.length > 0 && !supervisorId) {
-            setSupervisorId(supervisorResult.value[0].id);
+          if (!isCameraman && supervisorResult.value.length > 0) {
+            setSupervisorId((current) => (current === '' ? supervisorResult.value[0].id : current));
           }
         } else {
           console.error('Failed to load supervisors:', supervisorResult.reason);
         }
         if (projectResult.status === 'fulfilled') {
           setProjects(projectResult.value);
-          if (projectResult.value.length > 0) setProjectSelection(projectResult.value[0].id);
-          else setProjectSelection('new');
+          setProjectSelection((current) =>
+            current !== '' ? current : projectResult.value.length > 0 ? projectResult.value[0].id : 'new'
+          );
         } else {
           console.error('Failed to load projects:', projectResult.reason);
           setError(projectResult.reason?.message || 'بارگذاری فهرست پروژه‌ها با خطا مواجه شد.');
@@ -162,7 +140,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
         setIsLoadingProjects(false);
       });
     } else {
-      destroyUppy();
+      queueRef.current?.dispose();
+      queueRef.current = null;
       setSelectedFiles([]);
       setSupervisors([]);
       setSupervisorId('');
@@ -174,18 +153,36 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       setItems([]);
       itemsRef.current = [];
       createdVideosRef.current = [];
-      finalizePromisesRef.current.clear();
       autoClosedRef.current = false;
+      completedRef.current = false;
       setStage('idle');
       setError(null);
-
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, isCameraman]);
 
-  // هنگام بسته‌شدن/از بین رفتن مودال، هیچ آپلود نیمه‌کاره‌ای در پس‌زمینه نماند.
-  useEffect(() => () => destroyUppy(), []);
+  useEffect(() => () => queueRef.current?.dispose(), []);
+
+  /** پایان دسته: وقتی همهٔ فایل‌ها ثبت شدند، حتی پس از «ادامه» یا «تلاش دوباره». */
+  const finalizeBatchIfDone = React.useCallback(
+    (list: QueueItem[]) => {
+      if (completedRef.current || list.length === 0) return;
+      if (!list.every((item) => item.status === 'done')) return;
+      completedRef.current = true;
+      setStage('done');
+      createdVideosRef.current.forEach((video) => onSuccess(video));
+      if (!autoClosedRef.current) {
+        autoClosedRef.current = true;
+        setTimeout(() => onClose(), 1200);
+      }
+    },
+    [onClose, onSuccess]
+  );
+
+  useEffect(() => {
+    if (stage === 'uploading' || stage === 'partial') finalizeBatchIfDone(items);
+  }, [items, stage, finalizeBatchIfDone]);
 
   if (!isOpen) return null;
 
@@ -201,11 +198,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     if (items.length === 0) return 0;
     const total = items.reduce((sum, item) => sum + item.size, 0);
     if (total === 0) return 0;
-    const uploaded = items.reduce((sum, item) => {
-      if (item.status === 'done' || item.status === 'finalizing') return sum + item.size;
-      return sum + Math.round((item.size * item.progress) / 100);
+    const transferred = items.reduce((sum, item) => {
+      if (item.status === 'done') return sum + item.size;
+      return sum + Math.min(item.size, item.transferred || 0);
     }, 0);
-    return Math.min(100, Math.round((uploaded / total) * 100));
+    return Math.min(100, Math.round((transferred / total) * 100));
   })();
 
   const addFiles = (incoming: FileList | File[]) => {
@@ -256,7 +253,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     e.preventDefault();
     setIsDragging(false);
     if (isBusy) return;
-    const entries = Array.from(e.dataTransfer.items || []).map((item) => (item as any).webkitGetAsEntry?.()).filter(Boolean);
+    const entries = Array.from(e.dataTransfer.items || [])
+      .map((item) => (item as any).webkitGetAsEntry?.())
+      .filter(Boolean);
     if (entries.length === 0) {
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
       return;
@@ -264,7 +263,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     const files: File[] = [];
     const readEntry = async (entry: any): Promise<void> => {
       if (entry.isFile) {
-        await new Promise<void>((resolve) => entry.file((file: File) => { files.push(file); resolve(); }, () => resolve()));
+        await new Promise<void>((resolve) =>
+          entry.file((file: File) => { files.push(file); resolve(); }, () => resolve())
+        );
         return;
       }
       if (entry.isDirectory) {
@@ -283,13 +284,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
   /** Open the operating system directory dialog, not a regular file dialog. */
   const selectFolder = async () => {
     if (isBusy) return;
-    const picker = (window as Window & {
-      showDirectoryPicker?: () => Promise<any>;
-    }).showDirectoryPicker;
+    const picker = (window as Window & { showDirectoryPicker?: () => Promise<any> }).showDirectoryPicker;
 
-    // showDirectoryPicker is the API that opens the Windows directory dialog
-    // with the native "Select folder" action. It is available only in a
-    // secure context (HTTPS or localhost) in Chromium-based browsers.
     if (!picker || !window.isSecureContext) {
       setError('برای باز شدن پنجره «Select folder»، سامانه را با Chrome یا Edge روی HTTPS یا localhost باز کنید. پنجره انتخاب فایل عمداً باز نمی‌شود.');
       return;
@@ -308,7 +304,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       await visit(directory);
       addFiles(files);
     } catch (err: any) {
-      // Closing the native picker is not an error and should not show a toast.
       if (err?.name !== 'AbortError') setError('انتخاب فولدر انجام نشد؛ دوباره تلاش کنید.');
     }
   };
@@ -344,7 +339,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     setError(null);
     setStage('starting');
 
-    // پروژه جدید فقط یک بار ساخته می‌شود؛ همه فایل‌های این دسته به همان پروژه می‌روند.
     let projectId: number;
     try {
       if (projectSelection === 'new') {
@@ -364,240 +358,89 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     }
 
     const queueFiles = selectedFiles.map((entry) => ({ ...entry, title: entry.title.trim() }));
-    const initialItems: QueueItem[] = queueFiles.map((entry) => ({
-      key: entry.key,
-      fileId: null,
-      name: entry.file.name,
-      size: entry.file.size,
-      title: entry.title,
-      progress: 0,
-      status: 'queued',
-      projectId,
-      mediaType: entry.file.type.startsWith('image/') ? 'image' : 'video',
-    }));
-    itemsRef.current = initialItems;
-    setItems(initialItems);
     createdVideosRef.current = [];
-    finalizePromisesRef.current.clear();
     autoClosedRef.current = false;
-
-    const token = getStoredToken();
-    const uppy = new Uppy({
-      autoProceed: false,
-      allowMultipleUploadBatches: false,
-      restrictions: {
-        maxFileSize: MAX_FILE_SIZE,
-        maxNumberOfFiles: MAX_BATCH_FILES,
-      },
-    });
-    uppyRef.current = uppy;
-
-    uppy.use(Tus, {
-      endpoint: '/api/tus',
-      chunkSize: TUS_CHUNK_SIZE,
-      retryDelays: TUS_RETRY_DELAYS,
-      limit: CONCURRENT_UPLOADS,
-      removeFingerprintOnSuccess: true,
-      // name/type در @uppy/tus به filename/filetype تبدیل می‌شوند؛ اگر در فهرست
-      // مجاز نباشند، سرور فایل را بدون نام می‌بیند و آپلود را رد می‌کند.
-      allowedMetaFields: ['name', 'type', 'title', 'supervisorId', 'projectId'],
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    completedRef.current = false;
 
     const sharedFields: Record<string, string> = { projectId: String(projectId) };
     if (!isCameraman) sharedFields.supervisorId = String(supervisorId);
-    batchFieldsRef.current = { ...sharedFields };
 
-    /** ثبت رکورد ویدیو از نشست کامل‌شده TUS. */
-    const finalizeItem = async (item: QueueItem): Promise<void> => {
-      if (!item.uploadId) return;
-      updateItem(item.key, { status: 'finalizing', progress: 100, error: undefined });
-      try {
-        const video = await api.createVideoFromUpload(item.uploadId, {
+    const token = getStoredToken();
+    const queue = new UploadQueue({
+      files: queueFiles.map((entry) => ({ key: entry.key, file: entry.file, title: entry.title })),
+      fields: sharedFields,
+      concurrency: chooseConcurrency(),
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      onUpdate: (next) => applyItems(next),
+      finalize: (item, uploadId) =>
+        api.createVideoFromUpload(uploadId, {
           ...sharedFields,
           title: item.title,
-          fileType: queueFiles.find((entry) => entry.key === item.key)?.file.type || 'application/octet-stream',
-        });
+          fileType: item.file.type || 'application/octet-stream',
+        }),
+      onVideo: (video) => {
         createdVideosRef.current.push(video);
-        updateItem(item.key, { status: 'done', videoId: video.id });
-      } catch (err: any) {
-        updateItem(item.key, {
-          status: 'error',
-          error: err?.message || 'ثبت ویدیو در سرور با خطا مواجه شد؛ دوباره تلاش کنید.',
-        });
-      }
-    };
-
-    uppy.on('file-added', (file) => {
-      const key = String(file.meta.clientKey || '');
-      if (!key) return;
-      updateItem(key, { fileId: file.id });
+      },
     });
 
-    uppy.on('upload-progress', (file, progress) => {
-      if (!file) return;
-      const key = String(file.meta.clientKey || '');
-      if (!key) return;
-      const totalBytesForFile = progress.bytesTotal ?? 0;
-      const percent = totalBytesForFile > 0
-        ? Math.min(99, Math.round((progress.bytesUploaded / totalBytesForFile) * 100))
-        : 0;
-      updateItem(key, { status: 'uploading', progress: percent });
-    });
+    queueRef.current = queue;
+    applyItems(queue.getItems());
+    setStage('uploading');
 
-    uppy.on('upload-pause', (file, isPaused) => {
-      if (!file) return;
-      const key = String(file.meta.clientKey || '');
-      if (!key) return;
-      updateItem(key, { status: isPaused ? 'paused' : 'uploading' });
-    });
+    try {
+      await queue.start();
+    } catch (err: any) {
+      console.error('[Upload] Queue failed:', err);
+    }
 
-    uppy.on('upload-success', (file, response) => {
-      if (!file) return;
-      const key = String(file.meta.clientKey || '');
-      if (!key) return;
-      const uploadUrl = String(response?.uploadURL || '');
-      const uploadId = uploadUrl.split('?')[0].split('/').filter(Boolean).pop() || '';
-      if (!uploadId) {
-        updateItem(key, { status: 'error', error: 'شناسه نشست آپلود از سرور دریافت نشد.' });
-        return;
-      }
-      const item = itemsRef.current.find((entry) => entry.key === key);
-      if (!item) return;
-      updateItem(key, { uploadId, progress: 100, status: 'finalizing' });
-      const promise = finalizeItem({ ...item, uploadId });
-      finalizePromisesRef.current.set(key, promise);
-    });
+    const latest = queue.getItems();
+    const allDone = latest.length > 0 && latest.every((item) => item.status === 'done');
 
-    uppy.on('upload-error', (file, err) => {
-      if (!file) return;
-      const key = String(file.meta.clientKey || '');
-      if (!key) return;
-      updateItem(key, {
-        status: 'error',
-        error: err?.message || 'ارسال این فایل با خطا متوقف شد.',
-      });
-    });
-
-    uppy.on('restriction-failed', (_file, err) => {
-      setError(err?.message || 'یکی از فایل‌ها شرایط آپلود را ندارد.');
-    });
-
-    uppy.addFiles(
-      queueFiles.map((entry) => ({
-        name: entry.file.name,
-        type: entry.file.type || 'video/mp4',
-        data: entry.file,
-        meta: {
-          clientKey: entry.key,
-          title: entry.title,
-          name: entry.file.name,
-          type: entry.file.type || 'video/mp4',
-          ...sharedFields,
-        },
-      }))
-    );
-
-    // هر فایلی که مرورگر/Uppy نپذیرفت به‌جای ماندن در «صف» علامت خطا می‌گیرد.
-    applyItems((prev) =>
-      prev.map((item) =>
-        item.fileId
-          ? item
-          : { ...item, status: 'error', error: 'این فایل برای آپلود پذیرفته نشد.' }
-      )
-    );
-
-    if (Object.keys(uppy.getState().files).length === 0) {
-      setError('هیچ فایلی برای آپلود پذیرفته نشد.');
-      setStage('partial');
-      destroyUppy();
+    if (allDone) {
+      finalizeBatchIfDone(latest);
       return;
     }
 
-    setStage('uploading');
-    try {
-      await uppy.upload();
-    } catch (err: any) {
-      // خطای کلی صف؛ خطای هر فایل جداگانه در upload-error ثبت شده است.
-      console.error('[Upload] Batch upload failed:', err);
-    }
-
-    // همه نهایی‌سازی‌های در جریان (ثبت رکورد ویدیو) تمام شوند.
-    await Promise.allSettled(Array.from(finalizePromisesRef.current.values()));
-
-    const latest = itemsRef.current;
-    const failed = latest.filter((item) => item.status === 'error' || item.status === 'canceled');
-    const allDone = failed.length === 0 && latest.length > 0 && latest.every((item) => item.status === 'done');
-
-    if (allDone) {
-      setStage('done');
-      createdVideosRef.current.forEach((video) => onSuccess(video));
-      if (!autoClosedRef.current) {
-        autoClosedRef.current = true;
-        setTimeout(() => onClose(), 1200);
-      }
-    } else {
-      setStage('partial');
-      if (latest.some((item) => item.status === 'error')) {
-        setError('بعضی فایل‌ها ارسال نشدند؛ از دکمه «تلاش دوباره» همان ردیف استفاده کنید.');
-      }
+    setStage('partial');
+    if (latest.some((item) => item.status === 'error')) {
+      setError('بعضی فایل‌ها ارسال نشدند؛ از دکمه «تلاش دوباره» همان ردیف استفاده کنید.');
+    } else if (latest.some((item) => item.status === 'paused')) {
+      setError('آپلود متوقف شده است؛ با دکمه «ادامه» همان ردیف از سر بگیرید.');
     }
   };
 
   const pauseResumeItem = (item: QueueItem) => {
-    const uppy = uppyRef.current;
-    if (!uppy || !item.fileId) return;
-    try {
-      uppy.pauseResume(item.fileId);
-    } catch {}
+    if (item.status === 'paused') {
+      setError(null);
+      setStage('uploading');
+      queueRef.current?.resume(item.key);
+      return;
+    }
+    queueRef.current?.pause(item.key);
   };
 
   const retryItem = (item: QueueItem) => {
-    if (item.uploadId) {
-      // آپلود کامل شده اما ثبت رکورد ویدیو شکست خورده؛ فقط نهایی‌سازی تکرار می‌شود.
-      updateItem(item.key, { status: 'finalizing', error: undefined });
-      const promise = api
-        .createVideoFromUpload(item.uploadId, {
-          ...batchFieldsRef.current,
-          projectId: String(item.projectId),
-          title: item.title,
-        })
-        .then((video) => {
-          createdVideosRef.current.push(video);
-          updateItem(item.key, { status: 'done', error: undefined, videoId: video.id });
-        })
-        .catch((err: any) => {
-          updateItem(item.key, { status: 'error', error: err?.message || 'ثبت ویدیو ناموفق بود.' });
-        });
-      finalizePromisesRef.current.set(item.key, promise);
-      return;
-    }
-    const uppy = uppyRef.current;
-    if (uppy && item.fileId) {
-      updateItem(item.key, { status: 'queued', error: undefined, progress: 0 });
-      uppy.retryUpload(item.fileId).catch(() => undefined);
-    }
+    setError(null);
+    setStage('uploading');
+    queueRef.current?.retry(item.key);
   };
 
   const cancelUpload = () => {
-    const uppy = uppyRef.current;
-    if (uppy) {
-      try {
-        uppy.cancelAll();
-      } catch {}
-    }
-    // فایل‌هایی که آپلودشان تمام شده و فقط «ثبت رکورد» آن‌ها در جریان است
-    // لغو نمی‌شوند؛ درخواست ثبت آن‌ها سمت سرور در حال انجام است.
-    applyItems((prev) =>
-      prev.map((item) =>
-        item.status === 'uploading' || item.status === 'queued' || item.status === 'paused'
-          ? { ...item, status: 'canceled', error: 'آپلود لغو شد.' }
-          : item
-      )
-    );
+    queueRef.current?.cancelAll();
     setStage('partial');
     setError('آپلود لغو شد؛ فایل‌های تکمیل‌شده در سامانه ثبت شده‌اند.');
   };
+
+  const handleClose = () => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    queueRef.current?.dispose();
+    queueRef.current = null;
+    onClose();
+  };
+
+  const activeCount = items.filter((item) => item.status === 'done').length;
+  const retryingCount = items.filter((item) => item.status === 'retrying').length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-in fade-in duration-200">
@@ -620,8 +463,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
             </div>
           </div>
           <button
-            onClick={onClose}
-            disabled={stage === 'uploading' || stage === 'starting'}
+            onClick={handleClose}
+            disabled={isBusy}
             className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
             aria-label="بستن"
           >
@@ -630,6 +473,13 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5 text-xs max-h-[75vh] overflow-y-auto">
+          {!isOnline && (
+            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 flex items-center gap-2">
+              <WifiOff className="w-4 h-4 shrink-0" />
+              <span>اینترنت قطع است. آپلودها متوقف نمی‌شوند و به‌محض وصل‌شدن، خودکار از همان بایت ادامه می‌یابند.</span>
+            </div>
+          )}
+
           {/* Drop zone */}
           {stage === 'idle' ? (
             <div
@@ -639,41 +489,45 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
               }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleFileDrop}
-               onClick={() => fileInputRef.current?.click()}
+              onClick={() => fileInputRef.current?.click()}
               className={`border-2 border-dashed rounded-3xl p-6 text-center cursor-pointer transition-all duration-200 ${
                 isDragging
                   ? 'border-purple-500 bg-purple-500/10 scale-[0.99]'
                   : 'border-zinc-700 hover:border-purple-500/60 bg-zinc-950/50 hover:bg-zinc-950/80'
               }`}
             >
-                 <input
-                 ref={fileInputRef}
-                 type="file"
-                 multiple
-                 accept="*/*"
-                 onChange={(e) => {
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="*/*"
+                onChange={(e) => {
                   if (e.target.files) addFiles(e.target.files);
                   e.target.value = '';
                 }}
-               className="hidden"
+                className="hidden"
               />
               <div className="w-14 h-14 mx-auto mb-3 rounded-2xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center text-purple-400">
                 <UploadCloud className="w-7 h-7" />
               </div>
-                 <h4 className="text-sm font-bold text-zinc-200 mb-1">
-                 فایل‌های ویدیو و عکس را اینجا رها کنید (Drag &amp; Drop)
+              <h4 className="text-sm font-bold text-zinc-200 mb-1">
+                فایل‌های ویدیو و عکس را اینجا رها کنید (Drag &amp; Drop)
               </h4>
               <p className="text-xs text-zinc-400 mb-3">
                 یا برای انتخاب چند فایل هم‌زمان کلیک کنید — تا {MAX_BATCH_FILES} فایل در هر دسته
               </p>
               <span className="inline-flex items-center px-4 py-2 rounded-xl bg-zinc-800 text-zinc-200 text-xs font-semibold border border-zinc-700 shadow-sm">
-                 انتخاب فایل‌ها
-               </span>
-               <button type="button" onClick={(e) => { e.stopPropagation(); void selectFolder(); }} className="inline-flex items-center px-4 py-2 mr-2 rounded-xl bg-purple-600/20 text-purple-200 text-xs font-semibold border border-purple-500/30 hover:bg-purple-600/30">
-                 فولدر
-               </button>
+                انتخاب فایل‌ها
+              </span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); void selectFolder(); }}
+                className="inline-flex items-center px-4 py-2 mr-2 rounded-xl bg-purple-600/20 text-purple-200 text-xs font-semibold border border-purple-500/30 hover:bg-purple-600/30"
+              >
+                فولدر
+              </button>
               <p className="text-[11px] text-zinc-500 mt-3">
-                 همه فرمت‌های ویدیو و تصویر پذیرفته می‌شوند — هر فایل تا ۸ گیگابایت و هر دسته تا {MAX_BATCH_FILES} فایل
+                همه فرمت‌های ویدیو و تصویر پذیرفته می‌شوند — هر فایل تا ۸ گیگابایت و هر دسته تا {MAX_BATCH_FILES} فایل
               </p>
             </div>
           ) : null}
@@ -710,7 +564,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                   ? selectedFiles.map((entry) => (
                       <div key={entry.key} className="p-3 flex items-center gap-3">
                         <div className="w-9 h-9 rounded-lg bg-purple-600/20 text-purple-400 border border-purple-500/30 flex items-center justify-center shrink-0">
-                           {entry.file.type.startsWith('image/') ? <ImageIcon className="w-4 h-4" /> : <FileVideo className="w-4 h-4" />}
+                          {entry.file.type.startsWith('image/') ? <ImageIcon className="w-4 h-4" /> : <FileVideo className="w-4 h-4" />}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="text-[11px] font-semibold text-zinc-200 truncate">{entry.file.name}</div>
@@ -721,7 +575,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                             type="text"
                             value={entry.title}
                             onChange={(e) => updateSelectedTitle(entry.key, e.target.value)}
-                             placeholder={entry.file.type.startsWith('image/') ? 'عنوان تصویر' : 'عنوان ویدیو'}
+                            placeholder={entry.file.type.startsWith('image/') ? 'عنوان تصویر' : 'عنوان ویدیو'}
                             className="mt-1.5 w-full bg-zinc-900 border border-zinc-800 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:ring-1 focus:ring-purple-500"
                           />
                         </div>
@@ -739,7 +593,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                       <div key={item.key} className="p-3 space-y-1.5">
                         <div className="flex items-center gap-2.5">
                           <div className="w-8 h-8 rounded-lg bg-zinc-900 text-zinc-300 border border-zinc-800 flex items-center justify-center shrink-0">
-                             {item.status === 'done' ? (
+                            {item.status === 'done' ? (
                               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                             ) : item.status === 'error' ? (
                               <AlertCircle className="w-4 h-4 text-rose-400" />
@@ -747,8 +601,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                               <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
                             ) : item.status === 'paused' ? (
                               <Pause className="w-4 h-4 text-amber-400" />
+                            ) : item.status === 'retrying' ? (
+                              <RotateCcw className="w-4 h-4 text-amber-300 animate-spin" />
+                            ) : item.file.type.startsWith('image/') ? (
+                              <ImageIcon className="w-4 h-4 text-sky-400" />
                             ) : (
-                               item.mediaType === 'image' ? <ImageIcon className="w-4 h-4 text-sky-400" /> : <FileVideo className="w-4 h-4 text-purple-400" />
+                              <FileVideo className="w-4 h-4 text-purple-400" />
                             )}
                           </div>
                           <div className="min-w-0 flex-1">
@@ -761,7 +619,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                             <div className="text-[10px] text-zinc-500 truncate">{item.name}</div>
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
-                            {(item.status === 'uploading' || item.status === 'paused') && item.fileId && (
+                            {(item.status === 'uploading' || item.status === 'paused' || item.status === 'retrying') && (
                               <button
                                 type="button"
                                 onClick={() => pauseResumeItem(item)}
@@ -790,7 +648,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                                 ? 'bg-rose-500'
                                 : item.status === 'done'
                                   ? 'bg-emerald-500'
-                                  : 'bg-purple-500'
+                                  : item.status === 'retrying' || item.status === 'paused'
+                                    ? 'bg-amber-500'
+                                    : 'bg-purple-500'
                             }`}
                             style={{ width: `${item.status === 'done' ? 100 : item.progress}%` }}
                           />
@@ -802,12 +662,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                                 ? 'text-rose-400'
                                 : item.status === 'done'
                                   ? 'text-emerald-400'
-                                  : item.status === 'paused'
+                                  : item.status === 'paused' || item.status === 'retrying'
                                     ? 'text-amber-400'
                                     : 'text-zinc-500'
                             }
                           >
-                            {item.error || STATUS_LABEL[item.status]}
+                            {item.error || item.message || STATUS_LABEL[item.status]}
                           </span>
                           {item.status === 'done' && (
                             <span className="text-zinc-600 font-mono">ثبت شد</span>
@@ -845,9 +705,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 <option value="new">+ ایجاد پروژه جدید</option>
               </select>
               {stage === 'idle' && selectedFiles.length > 1 && projectSelection !== 'new' && (
-                <p className="text-[10px] text-zinc-500 mt-1">
-                  همه فایل‌های این دسته در همین پروژه ثبت می‌شوند.
-                </p>
+                <p className="text-[10px] text-zinc-500 mt-1">همه فایل‌های این دسته در همین پروژه ثبت می‌شوند.</p>
               )}
             </div>
 
@@ -936,13 +794,24 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
             <div className="p-4 rounded-2xl bg-purple-950/20 border border-purple-500/30 space-y-2">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-zinc-200 font-medium">
-                  {`در حال ارسال ${items.filter((i) => i.status === 'done').length} از ${items.length} فایل با TUS...`}
+                  {`در حال ارسال ${activeCount} از ${items.length} فایل${retryingCount > 0 ? ` • ${retryingCount} در انتظار اتصال` : ''}`}
                 </span>
                 <span className="font-mono text-purple-400 font-bold">{overallProgress}%</span>
               </div>
-              <p className="text-[10px] text-zinc-500">
-                اگر اینترنت قطع شود، ارسال از همان بایت متوقف‌شده ادامه می‌یابد؛ نیازی به انتخاب دوباره فایل نیست.
+              <p className="text-[10px] text-zinc-500 leading-relaxed">
+                اگر اینترنت قطع یا کند شود، ارسال از همان بایت متوقف‌شده ادامه می‌یابد؛ نیازی به انتخاب دوباره فایل نیست.
               </p>
+              <p className="text-[10px] text-emerald-300/80 flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                برای جلوگیری از قطع آپلود، صفحه را روشن نگه دارید و از قفل کردن گوشی خودداری کنید.
+              </p>
+            </div>
+          )}
+
+          {stage === 'partial' && (
+            <div className="p-3.5 rounded-xl bg-zinc-950/60 border border-zinc-800 text-[11px] text-zinc-400 leading-relaxed">
+              فایل‌هایی که کامل رسیده‌اند در سامانه ثبت شده‌اند. برای فایل‌های ناتمام، «تلاش دوباره» را بزنید؛
+              ارسال از همان بایت ادامه می‌یابد و فایل دوباره ارسال نمی‌شود.
             </div>
           )}
 
@@ -957,7 +826,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
           <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               disabled={isBusy}
               className="px-4 py-2 text-zinc-400 hover:text-white rounded-xl hover:bg-zinc-800 transition-colors disabled:opacity-50"
             >
@@ -984,7 +853,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
             ) : stage === 'partial' ? (
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 className="px-5 py-2.5 font-bold rounded-xl bg-purple-600 hover:bg-purple-500 text-white transition-all shadow-lg shadow-purple-950/50 flex items-center gap-2"
               >
                 <CheckCircle2 className="w-4 h-4" />
