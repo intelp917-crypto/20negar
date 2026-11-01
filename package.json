@@ -38,7 +38,8 @@
     "tus-js-client": "^4.3.1",
     "tus-node-server": "^0.2.11",
     "vite": "^8.3.0",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "video.js": "8.24.2"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
